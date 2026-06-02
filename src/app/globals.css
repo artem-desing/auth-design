@@ -1,0 +1,44 @@
+@import "tailwindcss";
+@import "non.geist";
+@import "non.geist/mono";
+@import "@wallarm-org/design-system/theme";
+@import "tw-animate-css";
+
+@source "../../node_modules/@wallarm-org/design-system/dist";
+
+/* Dedicated tokens for the animated login background (LoginBackground / sweep
+   engine). Defined in terms of WADS palette tokens so the field tracks the
+   system theme automatically: WADS flips `[data-theme="dark"]`, and these
+   resolve through to the right hex at runtime via getComputedStyle.
+   --login-bg-sweep intentionally inverts (dark line on light, light line on
+   dark) since a darkening edge is invisible against a dark field. */
+:root {
+  --login-bg-base: var(--color-slate-50);
+  --login-bg-dot: var(--color-slate-600);
+  --login-bg-accent: var(--color-red-500);
+  --login-bg-sweep: var(--color-slate-950);
+}
+
+[data-theme='dark'] {
+  --login-bg-base: var(--color-slate-950);
+  --login-bg-dot: var(--color-slate-400);
+  --login-bg-accent: var(--color-red-200);
+  --login-bg-sweep: var(--color-slate-50);
+}
+
+/* Default focus-visible ring for interactive shell elements. WADS exposes
+   --color-focus-brand for this; without an opinionated default, browsers fall
+   back to thin platform-default outlines that look out of place against the
+   rest of the chrome. */
+@layer utilities {
+  nav a:focus-visible,
+  nav button:focus-visible,
+  aside a:focus-visible,
+  aside button:focus-visible,
+  [data-stack] a:focus-visible,
+  [data-stack] button:focus-visible {
+    outline: 2px solid var(--color-focus-brand);
+    outline-offset: 2px;
+    border-radius: 6px;
+  }
+}
