@@ -8,7 +8,7 @@ const PLANNED_FLOWS = [
 
 export default function Home() {
   return (
-    <main className="mx-auto flex min-h-full max-w-160 flex-col justify-center gap-24 px-24 py-48">
+    <main className="mx-auto flex min-h-full max-w-2xl flex-col justify-center gap-24 px-24 py-48">
       <div className="flex flex-col gap-8">
         <h1 className="text-2xl font-semibold text-[var(--color-text-primary)]">
           Auth Flows Prototype
