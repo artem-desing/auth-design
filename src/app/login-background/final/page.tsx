@@ -18,11 +18,11 @@ export default function LoginBackgroundFinal() {
         <div className="pointer-events-auto h-640 w-480 rounded-xl border border-[var(--color-border-primary)] bg-white p-32 shadow-xl" />
       </div>
 
-      {/* Back to the variant picker. */}
+      {/* Back to the prototypes hub. */}
       <div className="absolute left-16 top-16 z-50">
-        <Link href="/login-background">
+        <Link href="/">
           <Button variant="outline" color="neutral">
-            ← All variants
+            ← All prototypes
           </Button>
         </Link>
       </div>

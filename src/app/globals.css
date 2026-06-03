@@ -26,6 +26,16 @@
   --login-bg-sweep: var(--color-slate-50);
 }
 
+/* Indeterminate splash progress bar (ShellTransition splash phase). */
+@keyframes splash-progress {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(295%);
+  }
+}
+
 /* Default focus-visible ring for interactive shell elements. WADS exposes
    --color-focus-brand for this; without an opinionated default, browsers fall
    back to thin platform-default outlines that look out of place against the
