@@ -6,6 +6,19 @@
 
 @source "../../node_modules/@wallarm-org/design-system/dist";
 
+/* 8-bit pixel font for the easter-egg "caught" verdict labels (decorative;
+   external Google Fonts dependency — self-host later if this ever ships). A
+   @font-face rule, unlike @import, is valid anywhere in the cascade — so it
+   sidesteps Tailwind v4 inlining @import "tailwindcss" ahead of it. */
+@font-face {
+  font-family: "Press Start 2P";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url(https://fonts.gstatic.com/s/pressstart2p/v16/e3t4euO8T-267oIAQAu6jDQyK3nVivNm4I81.woff2)
+    format("woff2");
+}
+
 /* Dedicated tokens for the animated login background (LoginBackground / sweep
    engine). Defined in terms of WADS palette tokens so the field tracks the
    system theme automatically: WADS flips `[data-theme="dark"]`, and these
@@ -17,6 +30,8 @@
   --login-bg-dot: var(--color-slate-600);
   --login-bg-accent: var(--color-red-500);
   --login-bg-sweep: var(--color-slate-950);
+  /* Easter egg: the green "caught" confirm flash + counter. */
+  --login-bg-caught: var(--color-green-500);
 }
 
 [data-theme='dark'] {
@@ -24,6 +39,7 @@
   --login-bg-dot: var(--color-slate-400);
   --login-bg-accent: var(--color-red-200);
   --login-bg-sweep: var(--color-slate-50);
+  --login-bg-caught: var(--color-green-300);
 }
 
 /* Indeterminate splash progress bar (ShellTransition splash phase). */
@@ -33,6 +49,31 @@
   }
   100% {
     transform: translateX(295%);
+  }
+}
+
+/* Easter-egg "caught" counter (LoginBackground): the number bumps on each catch,
+   and the HUD slides in the first time a dot is caught. */
+@keyframes catch-pop {
+  0% {
+    transform: scale(1);
+  }
+  30% {
+    transform: scale(1.35);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+@keyframes hud-in {
+  0% {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
   }
 }
 

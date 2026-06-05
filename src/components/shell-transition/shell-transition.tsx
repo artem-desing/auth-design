@@ -222,7 +222,7 @@ export function ShellTransition({
             transition: motionSafe(`opacity ${morphMs}ms ${morphEase}`),
           }}
         >
-          <LoginBackground texture="halftone" className="h-full w-full" />
+          <LoginBackground texture="halftone" className="h-full w-full" interactive={false} />
         </div>
       )}
 

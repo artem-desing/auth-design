@@ -37,6 +37,13 @@ const SECTIONS: Section[] = [
         description:
           'The same field with the full tuning panel — texture, anomaly color, intensity, tilt and the rest — plus a light/dark preview switch.',
       },
+      {
+        href: '/login-background/game',
+        title: 'Easter final',
+        route: '/login-background/game',
+        description:
+          'The shipped login-background field at full size — same as Final on the surface. Stick around and click a few things; it does a bit more than it lets on.',
+      },
     ],
   },
   {
