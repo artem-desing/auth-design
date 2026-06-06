@@ -150,6 +150,7 @@ const LABEL_FONT = "'Press Start 2P', ui-monospace, SFMono-Regular, Menlo, monos
 // fairness lever (raise to harden); raise ARMED_SPAWN to ease; lower TARGET_LIFE
 // to harden. See docs/shooter-game-plan.md.
 const MAX_TARGETS = 6; // concurrent red targets in armed mode
+const ROUND_ATTACKS = 100; // attacks per round; spawning stops here, then the field drains and the round ends (~1 min)
 const MAX_BULLETS = 24; // in-flight bullet cap
 const BULLET_SPEED = 720; // px/s upward
 const FIRE_CADENCE = 0.18; // s between shots while Space is held
@@ -165,6 +166,17 @@ const CANNON_BASE_OFFSET = 26; // px from the bottom edge to the cannon base top
 const CANNON_BARREL_Y = 40; // px from the bottom edge where bullets emit
 const HUD_CLEAR_W = 120; // px reserved from the right edge for the top-right HUD counter
 const HUD_CLEAR_H = 140; // px reserved from the top edge (counter card + controls hint)
+// Game-mode spawn fairness. Keep armed/gate threats out of the regions the player
+// can't fairly engage: under the centered sign-in card (an opaque card hides them
+// there, so they age out as silent, score-tanking "escapes"), under the top-right
+// HUD, and down in the cannon's own zone. Threats fill the full ring around the
+// card instead (both sides + the full-width strips above and below it). Only
+// active once the wrapper sets the card box via setExclusion (the /game route);
+// /final and shell-transition keep their original full-field placement.
+const CARD_CLEAR_PAD = 48; // px kept clear around the card so a target's bloom never tucks under its edge
+const SPAWN_EDGE = 24; // px inset from the screen edges for game-mode spawns
+const CANNON_CLEAR = 72; // px reserved at the bottom so targets stay above the cannon barrel (hittable)
+const SPAWN_TRIES = 24; // reject-sampling attempts before the degenerate fallback
 
 interface Colors {
   dot: RGB;
@@ -211,31 +223,75 @@ function sweepX(t: number, w: number, period: number): number {
   return ((t % period) / period) * (w + 140) - 70;
 }
 
+/**
+ * Snapshot pushed to the wrapper on every score change. `kills` is the lifetime
+ * catch count (drives the arming gate); the `round*` fields scope the current
+ * fixed-length round (the comparable accuracy grade is `stopped / ROUND_ATTACKS`).
+ */
+export interface GameStats {
+  /** Lifetime catches — pre-arm gate progress; stays high so the field stays armed. */
+  kills: number;
+  /** Threats stopped this round (the score / accuracy numerator). */
+  stopped: number;
+  /** Threats that slipped past this round (timed out unshot). */
+  escaped: number;
+  /** Threats that have appeared this round (round ends at ROUND_ATTACKS). */
+  spawned: number;
+  /** Round complete — the full wave has spawned and the field has cleared. */
+  done: boolean;
+}
+
 export interface SweepEngine {
-  /** Start (or resume) the rAF loop. No-op under reduced motion. */
+  /** Start (or resume) the rAF loop. */
   start(): void;
   /** Stop the loop and detach listeners; keeps the last frame on screen. */
   stop(): void;
   /** Apply new options live (used by the tuning playground / prop changes). */
   setOptions(next: Partial<EngineOptions>): void;
-  /** Force a single static frame and never schedule rAF (reduced motion). */
+  /** Force a single static frame and never schedule rAF (used by the paused prop). */
   renderStatic(t?: number): void;
   /** Recompute DPR sizing + grid for the current container size. */
   resize(): void;
   /**
    * Easter egg: hit-test a click (canvas-local px) against live anomalies and
    * "catch" the one under the pointer. Returns true if something was caught.
-   * No-op while paused/reduced-motion (nothing is animating to catch).
+   * No-op while paused/stopped (nothing is animating to catch).
    */
   catchAt(x: number, y: number): boolean;
-  /** Game: flip between the decorative `idle` field and the `armed` shooter. */
+  /**
+   * Game: switch the shooter mode — `idle` is the decorative field, `armed`
+   * the live shooter. Does NOT reset the round (use startRound for that), so a
+   * pause + resume keeps the round in progress.
+   */
   setMode(mode: 'idle' | 'armed'): void;
+  /** Game: begin a fresh scored round (zero the round counters + arm). First arm + Try-again. */
+  startRound(): void;
+  /**
+   * Game: quit the shooter and return to the pristine decorative field — zeroes
+   * the gate (lifetime catches) AND the round counters and clears the field, so
+   * re-clicking the dots replays the insert-coin gate from scratch and re-arms on
+   * the 5th catch. (Esc-to-exit. Distinct from startRound, which arms a fresh
+   * round, and setMode, which preserves counts.)
+   */
+  exitGame(): void;
   /** Game: cannon lateral intent (−1 left, 0 stop, +1 right). Armed mode only. */
   setCannonDir(dir: number): void;
   /** Game: Space pressed/released. Cadence is owned by the loop. Armed only. */
   setFiring(on: boolean): void;
-  /** Register a callback fired on every kill (click or bullet) with the running total. */
-  onKill(cb: (total: number) => void): void;
+  /**
+   * Register a callback fired whenever the round state changes: on every kill
+   * (click or bullet), whenever a threat escapes, and at round end. Reports the
+   * snapshot so the HUD can show stopped / faced + accuracy and the result.
+   */
+  onStats(cb: (stats: GameStats) => void): void;
+  /**
+   * Game: set a centered no-spawn box (CSS px) — the sign-in card — so armed and
+   * gate threats never spawn behind it (unhittable → unfair escapes). Pass null
+   * to clear it (the default: the field spawns across its whole upper band as
+   * before). Recomputed against the live canvas size each spawn, so it recenters
+   * automatically on resize.
+   */
+  setExclusion(box: { width: number; height: number } | null): void;
 }
 
 export function createSweepEngine(
@@ -271,15 +327,24 @@ export function createSweepEngine(
   let caught: Caught[] = []; // green dissolves in flight
   let lastT = 0; // latest frame time (s) — so a click between frames can timestamp
   let lastFrameT = 0; // previous frame time (s) — for dt
-  let mode: 'idle' | 'armed' = 'idle';
+  let mode: 'idle' | 'armed' | 'over' = 'idle';
   const bullets: Bullet[] = [];
   let cannonX = 0;
   let cannonDir = 0; // −1 | 0 | 1
   let firing = false;
   let lastFire = -Infinity;
   let armT = -Infinity; // arm-flourish start
-  let onKillCb: ((total: number) => void) | null = null;
-  let killTotal = 0;
+  let onStatsCb: ((stats: GameStats) => void) | null = null;
+  let killTotal = 0; // lifetime catches — drives the arming gate; never reset (keeps armed across rounds)
+  // Per-round score, zeroed by startRound on every (re)arm. The round is a fixed
+  // ROUND_ATTACKS wave, so accuracy is a comparable final grade out of the total.
+  let roundKills = 0; // stopped this round
+  let roundEscaped = 0; // slipped past this round (timed out unshot)
+  let roundSpawned = 0; // attacks that have appeared this round (caps the round)
+  let roundDone = false; // round complete — wave fully spawned and field cleared
+  // Game-mode no-spawn box (the centered sign-in card), CSS px, or null. Set by
+  // the wrapper on the /game route; keeps threats from spawning behind the card.
+  let exclusion: { w: number; h: number } | null = null;
 
   let rafId: number | null = null;
   let running = false;
@@ -387,11 +452,25 @@ export function createSweepEngine(
       : a.x - ANOMALY_R < sc;
   }
 
-  // Bump the running kill total and notify the wrapper — the single count path
-  // for clicks AND bullets (the wrapper's counter mirrors this total).
+  // Push the running totals to the wrapper — fired on kills and on escapes, so
+  // the HUD's stopped / faced ratio + accuracy always reflect the latest state.
+  function emitStats() {
+    onStatsCb?.({
+      kills: killTotal,
+      stopped: roundKills,
+      escaped: roundEscaped,
+      spawned: roundSpawned,
+      done: roundDone,
+    });
+  }
+
+  // Bump the kill totals and notify the wrapper — the single count path for
+  // clicks AND bullets. killTotal is lifetime (gate); roundKills only counts
+  // while armed, so the 5 gate clicks never inflate the round's accuracy grade.
   function recordKill() {
     killTotal += 1;
-    onKillCb?.(killTotal);
+    if (mode === 'armed') roundKills += 1;
+    emitStats();
   }
 
   // The ONE kill path — click and bullet both route through it, so a click-kill
@@ -415,42 +494,113 @@ export function createSweepEngine(
     recordKill();
   }
 
+  // Reject-sample a fair spawn point for game mode: on-screen (small edge inset),
+  // above the cannon's barrel (so bullets can reach it), clear of the top-right
+  // HUD box, and — the fairness fix — outside the centered sign-in card grown by
+  // CARD_CLEAR_PAD (so a target's bloom never tucks under the opaque card and ages
+  // out as an unhittable "escape"). Threats land in the full ring around the card:
+  // both sides plus the full-width strips above and below it. Computed from the
+  // live size, so it recenters on resize. If reject-sampling comes up empty it
+  // falls back to the roomiest clear band's center (still a fair point); only when
+  // the card covers the whole field — never on supported desktop sizes, and no
+  // fair point can exist — does it settle for top-center. Called only when
+  // `exclusion` is set.
+  function spawnRing(): { x: number; y: number } {
+    const ex = exclusion;
+    const cl = ex ? (w - ex.w) / 2 - CARD_CLEAR_PAD : 0; // padded card edges
+    const cr = ex ? (w + ex.w) / 2 + CARD_CLEAR_PAD : 0;
+    const ct = ex ? (h - ex.h) / 2 - CARD_CLEAR_PAD : 0;
+    const cb = ex ? (h + ex.h) / 2 + CARD_CLEAR_PAD : 0;
+    const xMin = SPAWN_EDGE;
+    const yMin = SPAWN_EDGE;
+    const xMax = w - SPAWN_EDGE;
+    const yMax = h - CANNON_CLEAR; // keep targets above the cannon barrel (hittable)
+    for (let i = 0; i < SPAWN_TRIES; i++) {
+      const x = xMin + Math.random() * Math.max(1, xMax - xMin);
+      const y = yMin + Math.random() * Math.max(1, yMax - yMin);
+      if (ex && x > cl && x < cr && y > ct && y < cb) continue; // under the card
+      if (x > w - HUD_CLEAR_W && y < HUD_CLEAR_H) continue; // under the HUD counter
+      return { x, y };
+    }
+    // Reject-sampling came up empty (card + HUD cover most of the field). Drop into
+    // the roomiest clear band around the card — a band's center is always outside
+    // both the card and the top-right HUD, so a target is never stranded *under*
+    // the opaque card (the exact unfair case this fix prevents). Only if every band
+    // is empty (card larger than the whole field — never on supported sizes) do we
+    // settle for top-center, where no fair point exists anyway.
+    const bands = [
+      { gap: Math.min(ct, yMax) - yMin, x: w / 2, y: (yMin + Math.min(ct, yMax)) / 2 }, // above card
+      { gap: yMax - Math.max(cb, yMin), x: w / 2, y: (Math.max(cb, yMin) + yMax) / 2 }, // below card
+      { gap: Math.min(cl, xMax) - xMin, x: (xMin + Math.min(cl, xMax)) / 2, y: h / 2 }, // left of card
+      { gap: xMax - Math.max(cr, xMin), x: (Math.max(cr, xMin) + xMax) / 2, y: h / 2 }, // right of card
+    ];
+    let best = bands[0];
+    for (const b of bands) if (b.gap > best.gap) best = b;
+    return best.gap > 0 ? { x: best.x, y: best.y } : { x: w / 2, y: yMin };
+  }
+
   // Spawn / prune the anomaly population once per frame (O(1) + a tiny filter).
   function spawnTick(t: number) {
     // Prune dead/caught in place — no per-frame array allocation, even on /final.
     if (anomalies.length) {
       let k = 0;
+      let escapedThisTick = 0;
       for (let i = 0; i < anomalies.length; i++) {
         const a = anomalies[i];
-        if (!a.caught && t - a.t0 <= a.life) anomalies[k++] = a;
+        if (!a.caught && t - a.t0 <= a.life) {
+          anomalies[k++] = a;
+        } else if (mode === 'armed' && !a.caught) {
+          // Aged out unshot while armed — a threat that slipped past (the
+          // accuracy "missed"). Caught ones already scored via recordKill.
+          escapedThisTick += 1;
+        }
       }
       anomalies.length = k;
+      if (escapedThisTick) {
+        roundEscaped += escapedThisTick;
+        emitStats();
+      }
     }
     if (mode === 'armed') {
       if (t - armT < FIRST_SPAWN_DELAY) return;
-      if (anomalies.length < MAX_TARGETS && t - lastSpawn > ARMED_SPAWN) {
+      // Stop spawning once the round's attack quota is met; the in-flight wave
+      // drains on its own and frame() ends the round when the field is clear.
+      if (
+        roundSpawned < ROUND_ATTACKS &&
+        anomalies.length < MAX_TARGETS &&
+        t - lastSpawn > ARMED_SPAWN
+      ) {
         lastSpawn = t;
-        // Upper play-field. If the sample lands in the reserved top-right HUD box,
-        // nudge x left out of it — deterministic, so a target is never hidden
-        // under the counter even in the worst case.
-        let x = (0.1 + Math.random() * 0.8) * w;
-        const y = (0.1 + Math.random() * 0.45) * h;
-        if (x > w - HUD_CLEAR_W && y < HUD_CLEAR_H) x = (0.1 + Math.random() * 0.6) * w;
+        // Placement: in game mode (card box set) fill the fair ring around the
+        // card; otherwise today's upper play-field with the HUD nudge (a target
+        // is never hidden under the counter even in the worst case).
+        let x: number;
+        let y: number;
+        if (exclusion) {
+          ({ x, y } = spawnRing());
+        } else {
+          x = (0.1 + Math.random() * 0.8) * w;
+          y = (0.1 + Math.random() * 0.45) * h;
+          if (x > w - HUD_CLEAR_W && y < HUD_CLEAR_H) x = (0.1 + Math.random() * 0.6) * w;
+        }
         anomalies.push({ x, y, t0: t, life: TARGET_LIFE, caught: false });
+        roundSpawned += 1;
       }
-    } else if (t - lastSpawn > opts.anomalyInterval) {
-      // Idle: exactly one anomaly, re-rolled on today's cadence/placement/life —
-      // reproduces the original single-cluster feel (so /final is unchanged).
+    } else if (mode === 'idle' && t - lastSpawn > opts.anomalyInterval) {
+      // Idle: exactly one anomaly, re-rolled on today's cadence/life. Placement
+      // mirrors armed — the fair ring in game mode (so gate dots aren't hidden
+      // under the card either), today's full-field roll otherwise (so /final and
+      // shell-transition stay byte-for-byte unchanged).
       lastSpawn = t;
-      anomalies = [
-        {
-          x: 30 + Math.random() * Math.max(1, w - 60),
-          y: 16 + Math.random() * Math.max(1, h - 32),
-          t0: t,
-          life: 2.4,
-          caught: false,
-        },
-      ];
+      let x: number;
+      let y: number;
+      if (exclusion) {
+        ({ x, y } = spawnRing());
+      } else {
+        x = 30 + Math.random() * Math.max(1, w - 60);
+        y = 16 + Math.random() * Math.max(1, h - 32);
+      }
+      anomalies = [{ x, y, t0: t, life: 2.4, caught: false }];
     }
   }
 
@@ -605,18 +755,38 @@ export function createSweepEngine(
   }
 
   function frame(t: number) {
-    const dt = Math.min(Math.max(0, t - lastFrameT), 0.05); // clamp: no tab-resume spike
+    const rawDt = t - lastFrameT;
+    const dt = Math.min(Math.max(0, rawDt), 0.05); // clamp: no tab-resume spike
+    // A paused loop (tab hidden, or the paused prop) leaves rAF time
+    // running, so the first resumed frame sees a large gap. Advance every
+    // time-relative marker by the skipped time — the same clamp dt applies to
+    // motion, extended to absolute timestamps — so nothing ages, spawns, or
+    // (mid-round) mass-escapes across the gap. No-op in steady state (skip = 0).
+    const skip = rawDt - dt;
+    if (skip > 0 && lastFrameT > 0) {
+      for (const a of anomalies) a.t0 += skip;
+      for (const c of caught) c.t0 += skip;
+      for (const l of latched) l.t0 += skip;
+      armT += skip;
+      lastSpawn += skip;
+      lastLatch += skip;
+    }
     lastFrameT = t;
     lastT = t;
     context.fillStyle = colors.base;
     context.fillRect(0, 0, w, h);
     if (opts.texture === 'halftone') {
       spawnTick(t);
-      if (mode === 'armed') stepGame(t, dt);
-      drawHalftone(t);
       if (mode === 'armed') {
-        drawCannon(t);
-        drawBullets();
+        stepGame(t, dt);
+        // End the round once the full quota has spawned AND the field is clear,
+        // so the final wave isn't a pile of unfair forced misses.
+        if (roundSpawned >= ROUND_ATTACKS && anomalies.length === 0) endRound();
+      }
+      drawHalftone(t);
+      if (mode === 'armed' || mode === 'over') {
+        drawCannon(t); // frozen turret stays as a visual anchor under the result
+        if (mode === 'armed') drawBullets();
       }
     } else {
       drawClean(t);
@@ -658,7 +828,13 @@ export function createSweepEngine(
   }
 
   function renderStatic(t = 1.4) {
+    // One-off draw at a fixed phase — must not advance the running clock, or a
+    // later resume would mis-measure the pause gap (see frame's skip handling).
+    const savedFrameT = lastFrameT;
+    const savedT = lastT;
     frame(t);
+    lastFrameT = savedFrameT;
+    lastT = savedT;
   }
 
   function setOptions(next: Partial<EngineOptions>) {
@@ -723,12 +899,75 @@ export function createSweepEngine(
     cannonDir = 0;
     firing = false;
     if (m === 'armed') {
+      // Re-seed timing/cannon for a genuine idle→armed transition. NOTE: in the
+      // current wrapper flow this is dormant — first arm and Try-again both go
+      // through startRound (which already sets mode='armed' and clears the field),
+      // so the arming effect's follow-up setMode('armed') hits the dedupe guard
+      // above. It deliberately leaves anomalies + round counters untouched, so even
+      // if it ever ran on a resume it wouldn't drop live targets (which would break
+      // `faced` reaching ROUND_ATTACKS).
       armT = lastT;
-      lastFrameT = lastT; // avoid a dt spike on the first armed frame
-      lastSpawn = lastT; // FIRST_SPAWN_DELAY measured from arming
+      lastFrameT = lastT; // avoid a dt spike on the armed frame
+      lastSpawn = lastT; // re-measure the spawn cadence
       cannonX = w / 2;
-      anomalies = []; // clear the idle anomaly; armed spawns a fresh population
     }
+  }
+
+  // Begin a fresh scored round: zero the per-round counters and (re)arm. Called
+  // on the first arm (gate cleared) and on the Try-again restart — NOT on a plain
+  // resume (setMode), which keeps the round's counters intact.
+  function startRound() {
+    roundKills = 0;
+    roundEscaped = 0;
+    roundSpawned = 0;
+    roundDone = false;
+    mode = 'armed';
+    bullets.length = 0;
+    cannonDir = 0;
+    firing = false;
+    armT = lastT;
+    lastFrameT = lastT;
+    lastSpawn = lastT;
+    cannonX = w / 2;
+    anomalies = [];
+    caught = []; // drop any in-flight green dissolves from the prior round
+    emitStats();
+  }
+
+  // Round over: freeze the shooter (no sim, no input, no bullets) while the
+  // decorative field keeps breathing. The wrapper reveals the result + Try-again
+  // off `done`; startRound() returns to play.
+  function endRound() {
+    mode = 'over';
+    roundDone = true;
+    bullets.length = 0;
+    cannonDir = 0;
+    firing = false;
+    emitStats();
+  }
+
+  // Quit the shooter back to the pristine decorative field: zero the gate
+  // (killTotal) and the round counters, drop the cannon/bullets/targets/dissolves,
+  // and go idle — so the insert-coin gate can be played again from scratch
+  // (re-clicking dots counts 0 → GATE; the wrapper re-arms via startRound on the
+  // 5th). emitStats pushes killTotal=0 so the wrapper's gate/HUD reset with it.
+  function exitGame() {
+    killTotal = 0;
+    roundKills = 0;
+    roundEscaped = 0;
+    roundSpawned = 0;
+    roundDone = false;
+    mode = 'idle';
+    bullets.length = 0;
+    cannonDir = 0;
+    firing = false;
+    anomalies = [];
+    caught = []; // drop any in-flight green dissolves
+    // Reset the idle spawn clock to its mount-time sentinel so the first decorative
+    // gate dot appears on the next frame (not up to anomalyInterval later, which it
+    // would if the last armed spawn was recent) — the gate is clickable immediately.
+    lastSpawn = -Infinity;
+    emitStats();
   }
 
   function setCannonDir(dir: number) {
@@ -742,8 +981,18 @@ export function createSweepEngine(
     firing = on;
   }
 
-  function onKill(cb: (total: number) => void) {
-    onKillCb = cb;
+  function onStats(cb: (stats: GameStats) => void) {
+    onStatsCb = cb;
+  }
+
+  // Set/clear the centered no-spawn card box (game mode). Only the size is stored;
+  // spawnRing centers + pads it against the live w/h, so it tracks resizes. Clamped
+  // to non-negative and to the canvas — a card can't sensibly be larger than the
+  // field, and this keeps a misconfigured size from blanketing the whole spawn area.
+  function setExclusion(box: { width: number; height: number } | null) {
+    exclusion = box
+      ? { w: Math.min(Math.max(0, box.width), w), h: Math.min(Math.max(0, box.height), h) }
+      : null;
   }
 
   resize();
@@ -756,8 +1005,11 @@ export function createSweepEngine(
     resize,
     catchAt,
     setMode,
+    startRound,
+    exitGame,
     setCannonDir,
     setFiring,
-    onKill,
+    onStats,
+    setExclusion,
   };
 }

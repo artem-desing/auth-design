@@ -5,6 +5,7 @@ import {
   createSweepEngine,
   DEFAULTS,
   type EngineOptions,
+  type GameStats,
   type SweepEngine,
   type Texture,
 } from './engine';
@@ -43,7 +44,7 @@ export interface LoginBackgroundProps {
   sweepColorVar?: string;
   /** CSS custom-property name for the green "caught" confirm flash. */
   caughtColorVar?: string;
-  /** Force a single static frame (also auto-true under reduced motion). */
+  /** Force a single static frame instead of running the animation loop. */
   paused?: boolean;
   /**
    * Easter egg: clicking a live anomaly "catches" it (green pop) and reveals a
@@ -57,6 +58,13 @@ export interface LoginBackgroundProps {
    * `/login-background/game` route turns this on; `/final` stays a pure field.
    */
   game?: boolean;
+  /**
+   * Game mode only: the centered sign-in card's size (CSS px). When set, armed
+   * and gate threats spawn in the ring *around* the card, never behind it — so a
+   * threat can't hide under the opaque card and silently tank the accuracy grade.
+   * Pass the card's rendered width/height; the engine recenters it on resize.
+   */
+  excludeCardSize?: { width: number; height: number };
   className?: string;
   style?: React.CSSProperties;
 }
@@ -88,21 +96,36 @@ const GATE_TARGET = 5; // catches required to arm the shooter
  * Decorative animated auth background. Renders only the field — the real login
  * form sits on top. Fills its nearest positioned ancestor by default; pass a
  * `className` (e.g. `fixed inset-0`) to mount it as a full-viewport injectable
- * layer instead. Never in tab order.
+ * layer instead.
  */
 export function LoginBackground(props: LoginBackgroundProps) {
   const interactive = props.interactive ?? true;
   const game = (props.game ?? false) && interactive;
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const engineRef = useRef<SweepEngine | null>(null);
-  // Easter-egg tally — doubles as the gate progress and the game score. Stays at
-  // 0 (counter hidden) until the first catch. Fed straight from the engine's
-  // running total via onKill, so clicks and bullets count through one path.
-  const [caught, setCaught] = useState(0);
-  // Tracked as state (not read imperatively) so the arming effect re-runs and
-  // detaches the keyboard if the OS reduced-motion preference flips mid-session.
-  const [reducedMotion, setReducedMotion] = useState(false);
+  // Latched once a round has started, so a re-entry (roundOver → play after
+  // Try-again) resumes the armed loop via setMode instead of re-running the
+  // first-arm startRound. Reset by Esc-exit so the next gate clear starts fresh.
+  const hasStartedRoundRef = useRef(false);
+  // Easter-egg tally, fed straight from the engine via onStats. `kills` is the
+  // lifetime catch count (gate progress; stays high so the field stays armed);
+  // the round* fields scope the current fixed-length round. Stays 0 (counter
+  // hidden) until the first catch.
+  const [stats, setStats] = useState<GameStats>({
+    kills: 0,
+    stopped: 0,
+    escaped: 0,
+    spawned: 0,
+    done: false,
+  });
+  const caught = stats.kills;
   const armed = game && caught >= GATE_TARGET;
+  const roundOver = armed && stats.done;
+  // Interception brag: of the threats faced this round, the share neutralised.
+  // Climbs 0 → 100 as the round runs; at round end `faced` lands on ROUND_ATTACKS,
+  // so accuracy is a comparable final grade out of the total.
+  const faced = stats.stopped + stats.escaped;
+  const accuracy = faced > 0 ? Math.round((stats.stopped / faced) * 100) : 100;
 
   // Latest values mirrored into refs so the mount-scoped effect and its media /
   // resize listeners always read current state without re-subscribing.
@@ -111,11 +134,13 @@ export function LoginBackground(props: LoginBackgroundProps) {
   const pausedRef = useRef(props.paused);
   const interactiveRef = useRef(interactive);
   const gameRef = useRef(game);
+  const excludeCardSizeRef = useRef(props.excludeCardSize);
   useEffect(() => {
     optionsRef.current = options;
     pausedRef.current = props.paused;
     interactiveRef.current = interactive;
     gameRef.current = game;
+    excludeCardSizeRef.current = props.excludeCardSize;
   });
 
   // A primitive signature that changes whenever any tunable changes — used as
@@ -130,9 +155,17 @@ export function LoginBackground(props: LoginBackgroundProps) {
     const engine = createSweepEngine(canvas, optionsRef.current);
     engineRef.current = engine;
 
-    // One count path: every kill (click OR bullet) flows through the engine's
-    // running total. The pointerdown handler below no longer increments.
-    engine.onKill((total) => setCaught(total));
+    // One count path: every kill (click OR bullet) and every escape flows through
+    // the engine's running totals. The pointerdown handler below no longer increments.
+    engine.onStats((s) => setStats(s));
+
+    // Game mode: hand the engine the centered no-spawn card box up front (before
+    // the loop starts), so threats never spawn behind the opaque card. The card
+    // size is static per route, so set once; the engine recenters it against the
+    // live canvas size on every resize.
+    if (gameRef.current && excludeCardSizeRef.current) {
+      engine.setExclusion(excludeCardSizeRef.current);
+    }
 
     // Warm the pixel font used for catch verdicts so the first one isn't drawn
     // in a fallback face (canvas can't lazy-load web fonts the way the DOM does).
@@ -140,7 +173,7 @@ export function LoginBackground(props: LoginBackgroundProps) {
       document.fonts.load("9px 'Press Start 2P'").catch(() => {});
     }
 
-    // Easter egg: catch a live anomaly under the pointer (count flows via onKill).
+    // Easter egg: catch a live anomaly under the pointer (count flows via onStats).
     const onPointerDown = interactiveRef.current
       ? (e: PointerEvent) => {
           const rect = canvas.getBoundingClientRect();
@@ -149,18 +182,13 @@ export function LoginBackground(props: LoginBackgroundProps) {
       : null;
     if (onPointerDown) canvas.addEventListener('pointerdown', onPointerDown);
 
-    const reduced = window.matchMedia('(prefers-reduced-motion: reduce)');
-    const apply = () => {
-      setReducedMotion(reduced.matches);
-      if (reduced.matches || pausedRef.current) {
-        engine.stop();
-        engine.renderStatic();
-      } else {
-        engine.start();
-      }
-    };
-    apply();
-    reduced.addEventListener('change', apply);
+    // Start the loop, or hold a single static frame if the `paused` prop is set.
+    if (pausedRef.current) {
+      engine.stop();
+      engine.renderStatic();
+    } else {
+      engine.start();
+    }
 
     let frame = 0;
     const ro = new ResizeObserver(() => {
@@ -178,7 +206,6 @@ export function LoginBackground(props: LoginBackgroundProps) {
     });
 
     return () => {
-      reduced.removeEventListener('change', apply);
       if (onPointerDown) canvas.removeEventListener('pointerdown', onPointerDown);
       ro.disconnect();
       themeObserver.disconnect();
@@ -192,8 +219,7 @@ export function LoginBackground(props: LoginBackgroundProps) {
     const engine = engineRef.current;
     if (!engine) return;
     engine.setOptions(optionsRef.current);
-    const reduced = window.matchMedia('(prefers-reduced-motion: reduce)');
-    if (reduced.matches || pausedRef.current) {
+    if (pausedRef.current) {
       engine.stop();
       engine.renderStatic();
     } else {
@@ -202,15 +228,28 @@ export function LoginBackground(props: LoginBackgroundProps) {
   }, [signature]);
 
   // Arming: flip the engine to the shooter at the gate, and own the keyboard
-  // only while actually armed (so /final and shell-transition never capture
-  // keys). Skipped entirely under reduced motion — the route degrades to the
-  // static decorative field.
+  // only while actually armed (so /final and shell-transition never capture keys).
   useEffect(() => {
     const engine = engineRef.current;
     if (!engine || !gameRef.current) return;
-    const live = armed && !reducedMotion;
-    engine.setMode(live ? 'armed' : 'idle');
-    if (!live) return;
+
+    // Mode control. startRound (first arm) zeroes the round; setMode resumes a
+    // round already in progress (roundOver → play after Try-again) without
+    // disturbing it. While the result is up the engine holds 'over' on its own —
+    // don't override it back to idle/armed.
+    if (!armed) {
+      // Decorative idle only before a round has ever started — i.e. pre-gate, or
+      // after an Esc-exit reset (which clears hasStartedRoundRef).
+      if (!hasStartedRoundRef.current) engine.setMode('idle');
+      return;
+    }
+    if (roundOver) return; // results screen — frozen in 'over', no keyboard
+    if (!hasStartedRoundRef.current) {
+      engine.startRound(); // first arm → a fresh 0 → ROUND_ATTACKS round
+      hasStartedRoundRef.current = true;
+    } else {
+      engine.setMode('armed'); // resume the in-progress round (e.g. after Try-again)
+    }
 
     const keys = { left: false, right: false };
     const applyDir = () => engine.setCannonDir((keys.right ? 1 : 0) - (keys.left ? 1 : 0));
@@ -225,6 +264,16 @@ export function LoginBackground(props: LoginBackgroundProps) {
         e.preventDefault();
       } else if (e.key === ' ' || e.key === 'Spacebar') {
         if (!e.repeat) engine.setFiring(true); // loop owns cadence, not OS repeat
+        e.preventDefault();
+      } else if (e.key === 'Escape') {
+        // Quit the shooter and reset to the pristine decorative gate: exitGame
+        // zeroes the gate count (→ caught back to 0, so the HUD/hints clear and
+        // re-clicking the dots replays the insert-coin flow), and we drop
+        // hasStartedRoundRef so the 5th catch re-arms via a FRESH startRound
+        // (not a setMode resume). The engine stat push flips `armed` false, so
+        // this effect re-runs and detaches these keys.
+        engine.exitGame();
+        hasStartedRoundRef.current = false;
         e.preventDefault();
       }
     };
@@ -247,52 +296,99 @@ export function LoginBackground(props: LoginBackgroundProps) {
       engine.setFiring(false);
       engine.setCannonDir(0);
     };
-  }, [armed, reducedMotion]);
+  }, [armed, roundOver]);
 
   return (
     <>
       <canvas
         ref={canvasRef}
-        aria-hidden="true"
         className={props.className ?? 'absolute inset-0 h-full w-full'}
         style={{ pointerEvents: interactive ? 'auto' : 'none', ...props.style }}
       />
       {interactive && caught > 0 && (
-        // Top-right HUD. Non-game: the Figma "caught" counter (node 192:7958).
-        // Game: the same card, relabelled — `n / 5` + `TO ARM` while gating,
-        // then the score + a controls hint once armed.
+        // Top-right HUD. Non-game: the Figma "caught" counter. Game: `n / 5 ·
+        // INSERT COIN` while gating, then the two-metric box (HIT count over a
+        // divider over the SCORE accuracy %, Figma node 192:7999) once armed — with
+        // a Try-again link just below the box when the round ends.
         <div
-          aria-hidden="true"
           className="pointer-events-none fixed top-24 right-24 z-[60] flex flex-col items-end gap-6"
           style={{ fontFamily: MONO_FONT }}
         >
           <div
-            className="flex h-52 w-76 flex-col items-center justify-center border border-[var(--color-border-primary)] bg-[var(--color-states-primary-hover)]"
+            className={`flex flex-col items-center justify-center border border-[var(--color-border-primary)] bg-[var(--color-states-primary-hover)] ${
+              // Armed (Figma node 192:7999): the two-metric box, HIT over SCORE.
+              // Gate shares its width so arming only grows the box taller; the
+              // non-game "caught" counter keeps its Figma 76×52.
+              armed ? 'h-113 w-119' : game ? 'h-52 w-119' : 'h-52 w-76'
+            }`}
             style={{ animation: 'hud-in 360ms cubic-bezier(0.4, 0, 0.2, 1)' }}
           >
-            <span
-              key={caught}
-              className="font-bold tabular-nums text-[color:var(--color-text-success)]"
-              style={{ fontSize: 16, lineHeight: '20px', animation: 'catch-pop 300ms ease-out' }}
-            >
-              {caught}
-              {game && !armed && (
-                <span style={{ opacity: 0.45 }}> / {GATE_TARGET}</span>
-              )}
-            </span>
-            <span
-              className="uppercase text-[color:var(--color-text-secondary)]"
-              style={{ fontSize: 12, lineHeight: '16px', fontFeatureSettings: '"liga" 0' }}
-            >
-              {game ? (armed ? 'score' : 'to arm') : 'caught'}
-            </span>
+            {/* Metric 1 — HIT (count) while armed; the gate / caught counter otherwise. */}
+            <div className="flex flex-col items-center gap-4">
+              <span
+                // Gate ("insert coin"): re-key per catch so the pop replays — the
+                // arcade beat. Armed: stable key + no pop, so the count ticks up
+                // quietly in place instead of bouncing on every hit.
+                key={armed ? 'count' : caught}
+                className="font-bold tabular-nums text-[color:var(--color-text-success)]"
+                style={{
+                  fontSize: 16,
+                  lineHeight: '20px',
+                  animation: armed ? undefined : 'catch-pop 300ms ease-out',
+                }}
+              >
+                {armed ? stats.stopped : caught}
+                {game && !armed && (
+                  <span style={{ opacity: 0.45 }}> / {GATE_TARGET}</span>
+                )}
+                {armed && <span style={{ opacity: 0.45 }}> / {faced}</span>}
+              </span>
+              <span
+                className="uppercase text-[color:var(--color-text-secondary)]"
+                style={{ fontSize: 12, lineHeight: '16px', fontFeatureSettings: '"liga" 0' }}
+              >
+                {game ? (armed ? 'hit' : 'insert coin') : 'caught'}
+              </span>
+            </div>
+            {/* Metric 2 — SCORE (the accuracy %, calc unchanged). Armed only, under a
+                full-width divider, styled to mirror the HIT pair (Figma 214:1263–66). */}
+            {armed && (
+              <>
+                <div className="my-8 h-px w-full bg-[var(--color-border-primary)]" />
+                <div className="flex flex-col items-center gap-4">
+                  <span
+                    className="font-bold tabular-nums text-[color:var(--color-text-success)]"
+                    style={{ fontSize: 16, lineHeight: '20px' }}
+                  >
+                    {accuracy}%
+                  </span>
+                  <span
+                    className="uppercase text-[color:var(--color-text-secondary)]"
+                    style={{ fontSize: 12, lineHeight: '16px', fontFeatureSettings: '"liga" 0' }}
+                  >
+                    score
+                  </span>
+                </div>
+              </>
+            )}
           </div>
-          {armed && (
+          {/* Try again — outside/below the box (Figma); styling unchanged: caps + underline. */}
+          {roundOver && (
+            <button
+              type="button"
+              onClick={() => engineRef.current?.startRound()}
+              className="pointer-events-auto cursor-pointer bg-transparent uppercase text-[color:var(--color-text-secondary)] underline underline-offset-4 hover:text-[color:var(--color-text-primary)]"
+              style={{ fontSize: 10, lineHeight: '14px', fontFamily: MONO_FONT, border: 'none' }}
+            >
+              Try again
+            </button>
+          )}
+          {armed && !roundOver && (
             <div
               className="text-[color:var(--color-text-secondary)]"
               style={{ fontSize: 10, lineHeight: '14px' }}
             >
-              ← → move · space fire
+              ← → move · space fire · esc to exit
             </div>
           )}
         </div>
@@ -300,7 +396,6 @@ export function LoginBackground(props: LoginBackgroundProps) {
       {game && caught > 0 && !armed && (
         // Gate hint — appears after the first catch, hidden once the shooter arms.
         <div
-          aria-hidden="true"
           className="pointer-events-none fixed inset-x-0 bottom-24 z-[60] flex justify-center"
           style={{ animation: 'hud-in 360ms cubic-bezier(0.4, 0, 0.2, 1)' }}
         >

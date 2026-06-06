@@ -8,16 +8,26 @@ import { LoginBackground } from '@/components/login-background';
  * anomalies, catch 5 to arm a pixel cannon, then ←/→ + Space to blast them.
  * `/final` stays a pure field; the game lives only here.
  */
+// Single source of truth for the sign-in card's size (CSS px). Shared by the
+// engine's no-spawn box and the card element below, so the shooter's exclusion
+// zone can never drift out of sync with the rendered card (a threat spawning
+// behind the opaque card would silently tank the accuracy grade).
+const CARD_W = 480;
+const CARD_H = 640;
+
 export default function LoginBackgroundGame() {
   return (
     <main className="relative h-dvh w-full overflow-hidden bg-[var(--login-bg-base)]">
-      <LoginBackground game />
+      {/* Threats spawn in the ring around the card, never behind it — see CARD_W/H. */}
+      <LoginBackground game excludeCardSize={{ width: CARD_W, height: CARD_H }} />
 
-      {/* Empty card — stands in for the real login form. Click-transparent here
-          so gate-phase clicks reach the field underneath (you catch anomalies
-          across the whole screen, including behind the card). */}
+      {/* Empty card — stands in for the real login form. Click-transparent so
+          gate-phase clicks still reach the field underneath. */}
       <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
-        <div className="h-640 w-480 rounded-xl border border-[var(--color-border-primary)] bg-white p-32 shadow-xl" />
+        <div
+          className="rounded-xl border border-[var(--color-border-primary)] bg-white p-32 shadow-xl"
+          style={{ width: CARD_W, height: CARD_H }}
+        />
       </div>
 
       {/* Back to the prototypes hub. */}

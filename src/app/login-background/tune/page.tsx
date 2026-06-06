@@ -247,7 +247,7 @@ export default function LoginBackgroundPlayground() {
           <SwitchControl />
           <SwitchLabel>
             <span className="text-xs text-[var(--color-text-secondary)]">
-              Freeze (reduced-motion preview)
+              Freeze
             </span>
           </SwitchLabel>
         </Switch>
@@ -255,11 +255,6 @@ export default function LoginBackgroundPlayground() {
         <Button variant="outline" color="neutral" onClick={() => switchTexture(knobs.texture)}>
           Reset to defaults
         </Button>
-
-        <p className="text-xs leading-relaxed text-[var(--color-text-tertiary)]">
-          Real <code>prefers-reduced-motion</code> is honored automatically — the
-          loop never starts and one static frame renders.
-        </p>
       </aside>
     </main>
   );
