@@ -65,6 +65,12 @@ export interface LoginBackgroundProps {
    * Pass the card's rendered width/height; the engine recenters it on resize.
    */
   excludeCardSize?: { width: number; height: number };
+  /**
+   * Called once on mount with a tiny imperative API into the engine. Used by the
+   * unlisted `/login-background/game/celebrate` route to replay the round-end
+   * celebration tiers on demand (`api.celebrate(score)`). Leave unset elsewhere.
+   */
+  onEngineReady?: (api: { celebrate: (score: number) => void }) => void;
   className?: string;
   style?: React.CSSProperties;
 }
@@ -117,6 +123,7 @@ export function LoginBackground(props: LoginBackgroundProps) {
     escaped: 0,
     spawned: 0,
     done: false,
+    celebrating: false,
   });
   const caught = stats.kills;
   const armed = game && caught >= GATE_TARGET;
@@ -135,12 +142,14 @@ export function LoginBackground(props: LoginBackgroundProps) {
   const interactiveRef = useRef(interactive);
   const gameRef = useRef(game);
   const excludeCardSizeRef = useRef(props.excludeCardSize);
+  const onEngineReadyRef = useRef(props.onEngineReady);
   useEffect(() => {
     optionsRef.current = options;
     pausedRef.current = props.paused;
     interactiveRef.current = interactive;
     gameRef.current = game;
     excludeCardSizeRef.current = props.excludeCardSize;
+    onEngineReadyRef.current = props.onEngineReady;
   });
 
   // A primitive signature that changes whenever any tunable changes — used as
@@ -159,13 +168,17 @@ export function LoginBackground(props: LoginBackgroundProps) {
     // the engine's running totals. The pointerdown handler below no longer increments.
     engine.onStats((s) => setStats(s));
 
-    // Game mode: hand the engine the centered no-spawn card box up front (before
-    // the loop starts), so threats never spawn behind the opaque card. The card
-    // size is static per route, so set once; the engine recenters it against the
-    // live canvas size on every resize.
-    if (gameRef.current && excludeCardSizeRef.current) {
+    // Hand the engine the centered no-spawn card box up front (before the loop
+    // starts), so threats never spawn behind the opaque card and the celebration
+    // composes its score-print/labels around it. The card size is static per
+    // route, so set once; the engine recenters it against the live canvas size
+    // on every resize. (/final and shell-transition pass nothing — unchanged.)
+    if (excludeCardSizeRef.current) {
       engine.setExclusion(excludeCardSizeRef.current);
     }
+
+    // Hand the demo route its replay hook (a no-op everywhere else).
+    onEngineReadyRef.current?.({ celebrate: (score) => engine.celebrate(score) });
 
     // Warm the pixel font used for catch verdicts so the first one isn't drawn
     // in a fallback face (canvas can't lazy-load web fonts the way the DOM does).
@@ -243,7 +256,20 @@ export function LoginBackground(props: LoginBackgroundProps) {
       if (!hasStartedRoundRef.current) engine.setMode('idle');
       return;
     }
-    if (roundOver) return; // results screen — frozen in 'over', no keyboard
+    if (roundOver) {
+      // Results / ceremony screen: the shooter is frozen and the gameplay keys
+      // stay detached, but Esc still fully exits — it dismisses the (persistent)
+      // celebration and resets the easter egg back to the decorative gate.
+      const onResultsKeyDown = (e: KeyboardEvent) => {
+        if (e.key === 'Escape') {
+          engine.exitGame();
+          hasStartedRoundRef.current = false;
+          e.preventDefault();
+        }
+      };
+      window.addEventListener('keydown', onResultsKeyDown);
+      return () => window.removeEventListener('keydown', onResultsKeyDown);
+    }
     if (!hasStartedRoundRef.current) {
       engine.startRound(); // first arm → a fresh 0 → ROUND_ATTACKS round
       hasStartedRoundRef.current = true;
@@ -372,8 +398,10 @@ export function LoginBackground(props: LoginBackgroundProps) {
               </>
             )}
           </div>
-          {/* Try again — outside/below the box (Figma); styling unchanged: caps + underline. */}
-          {roundOver && (
+          {/* Try again — outside/below the box (Figma); caps + underline. Held
+              back while the round-end ceremony plays (the celebration lands
+              first, then the plain results state with the replay link). */}
+          {roundOver && !stats.celebrating && (
             <button
               type="button"
               onClick={() => engineRef.current?.startRound()}

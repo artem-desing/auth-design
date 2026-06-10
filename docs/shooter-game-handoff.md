@@ -31,8 +31,11 @@ A hidden, progressive easter egg layered onto the decorative animated
    a steady, shootable population; `←/→` move, `Space` fires, `Esc` quits. Bullets
    neutralise reds through the exact same green dissolve. The round is a **fixed
    100-attack wave**, scored as **accuracy** (the brag metric).
-4. **Results** — when the wave is done, the field freezes the shooter and shows the
-   final HIT count + SCORE (accuracy %), with a **Try again** link.
+4. **Results** — when the wave is done, the field freezes the shooter, plays a
+   **tiered round-end celebration** scaled to the accuracy grade (see
+   `docs/shooter-game-celebration-handoff.md` — the dedicated spec for that layer),
+   and shows the final HIT count + SCORE (accuracy %), with a **Try again** link
+   once the ceremony settles.
 5. **Reset** — `Esc` at any time during play quits the shooter back to the pristine
    decorative field; re-clicking the dots replays the gate from zero (a repeatable
    cycle).
@@ -87,6 +90,7 @@ exitGame(): void                           // quit to the pristine gate (zero ga
 setCannonDir(dir: number): void            // −1 / 0 / +1 ; no-op unless armed & running
 setFiring(on: boolean): void               // Space down/up; cadence owned by the loop
 onStats(cb: (s: GameStats) => void): void  // fires on every kill, every escape, and at round end
+celebrate(score: number): void             // round-end ceremony replay hook — see shooter-game-celebration-handoff.md
 setExclusion(box: { width: number; height: number } | null): void // centered no-spawn card box
 ```
 
@@ -135,11 +139,12 @@ ARMED ROUND ────────────────► cannon rises; ke
   │                            box = HIT (stopped/faced) · divider · SCORE (accuracy %)
   │ all 100 spawned AND field clear → engine.endRound()
   ▼
-OVER (results) ─────────────► shooter frozen; box shows final HIT + SCORE;
-  │                            "Try again" link BELOW the box
+OVER (results) ─────────────► shooter frozen; the tiered CELEBRATION plays, then
+  │                            settles (digits + headline persist); box shows final
+  │                            HIT + SCORE; "Try again" BELOW the box once settled
   ├─ Try again → engine.startRound()  → back to ARMED (fresh round, score 0)
-  └─ Esc (any time while armed) → engine.exitGame() → IDLE, counter hidden,
-                                   gate replays from 0 on the next clicks
+  └─ Esc (during play OR on the results/ceremony screen) → engine.exitGame() →
+                                   IDLE, counter hidden, gate replays from 0
 ```
 
 - The wrapper derives `armed = game && caught >= GATE_TARGET(5)` and
@@ -370,8 +375,10 @@ exception to "no hard-coded hex." Do **not** introduce new hex in DOM/JSX.
 - **Try again** (results only): a button **below / outside the box** (a sibling in
   the HUD column, ~6px under the box). Geist Mono **10px / 14px**, **uppercase**,
   underline (`underline-offset-4`), `var(--color-text-secondary)` → hover
-  `var(--color-text-primary)`. `onClick` → `engine.startRound()`. There is **no**
-  separate "round complete" text line — the frozen field + Try-again convey it.
+  `var(--color-text-primary)`. `onClick` → `engine.startRound()`. **Held back while
+  the round-end celebration's active show plays** (`stats.celebrating`); it appears
+  as the ceremony settles. There is **no** separate "round complete" text line —
+  the frozen field + the celebration + Try-again convey it.
 - **Controls hint** (armed, not results): a line below the box —
   `← → move · space fire · esc to exit` — Geist Mono **10px / 14px**,
   `var(--color-text-secondary)`. (Mutually exclusive with Try-again.)
@@ -406,8 +413,11 @@ exception to "no hard-coded hex." Do **not** introduce new hex in DOM/JSX.
 
 - Listeners on **`window`** (the route is full-screen).
 - **Attach the game keyboard only when `game && armed && !roundOver`.** Detach
-  otherwise (the effect early-returns during the gate, results screen, and on
-  non-game routes — so `/final` / `shell-transition` never capture keys).
+  otherwise (the effect early-returns during the gate and on non-game routes — so
+  `/final` / `shell-transition` never capture keys). On the **results/ceremony
+  screen** (`roundOver`) an **Esc-only** keydown listener attaches instead, so Esc
+  fully exits from there too (it dismisses the persistent celebration + resets the
+  gate); arrows/Space stay detached while frozen.
 - `ArrowLeft`/`ArrowRight` → set a `{left,right}` held-state, derive
   `dir = (right?1:0) − (left?1:0)` (both-held cancels). `Space` (`' '`/`'Spacebar'`)
   → `setFiring(true)`; ignore `e.repeat`. `Escape` → `engine.exitGame()` +
@@ -587,6 +597,9 @@ time of writing):
   Esc, the counter/results box + hints).
 - `src/app/login-background/game/page.tsx` — the route (card size consts +
   `excludeCardSize`).
+- `src/app/login-background/game/celebrate/page.tsx` — the UNLISTED celebration
+  replay deck (five tier buttons through `engine.celebrate`); spec in
+  `docs/shooter-game-celebration-handoff.md`.
 - `src/app/page.tsx` — the hub card ("Easter final").
 - `src/app/globals.css` — `--login-bg-*` tokens, `@font-face` (Press Start 2P),
   `hud-in` / `catch-pop` keyframes.

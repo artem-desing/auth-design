@@ -178,6 +178,115 @@ const SPAWN_EDGE = 24; // px inset from the screen edges for game-mode spawns
 const CANNON_CLEAR = 72; // px reserved at the bottom so targets stay above the cannon barrel (hittable)
 const SPAWN_TRIES = 24; // reject-sampling attempts before the degenerate fallback
 
+// --- Round-end celebration ("happy ending") tunables. ------------------------
+// Tier ladder (locked): <20 no ceremony · 20–34 contained · 35–59 fireworks +
+// score print · 60–89 the same fireworks with MORE confetti · 90–99 blast-off ·
+// 100 the secret AIRTIGHT storm. Design rules: celebrate in the field's own
+// language (halftone squares, the grey/red/green rule, the sweep), every
+// particle RENDERS snapped to the dot grid with chunky stepped fades (the 8-bit
+// feel), rainbow color is reserved for the top tiers, and motion stays premium —
+// ease-out drifts and dissolves, no shake/flash. The show plays its active
+// timeline (CEL_DUR) and then SETTLES: digits + headline stay on stage until the
+// player dismisses it (Esc → full exit, or Try-again → fresh round).
+const CEL_DUR: Record<1 | 2 | 3 | 4, number> = { 1: 2.6, 2: 3.8, 3: 4.0, 4: 5.2 };
+const CEL_LABEL_AT: Record<1 | 2 | 3 | 4, number> = { 1: 0.7, 2: 2.8, 3: 2.4, 4: 2.6 };
+const CEL_SWEEP_START = 1.6; // s into the ceremony the score sweep-print begins
+const CEL_SWEEP_DUR = 1.2; // s the sweep takes to cross the digit block
+const CEL_LIFT_AT = 0.5; // s into blast-off the cannon starts to rise
+const CEL_LIFT_DUR = 1.2; // s the liftoff takes (ease-in — a launch, not a pop)
+const CEL_MAX_PARTICLES = 900; // hard cap so the 100% storm stays bounded
+const CEL_RAIN_RATE = 360; // confetti pieces/s during the 100% storm window
+// Retro arcade palette for the rainbow confetti — the celebration is the ONE
+// deliberate exception to the grey/red/green rule and to token-driven color: a
+// fixed 8-bit victory palette, used only at the top tiers.
+const CEL_PAL: RGB[] = [
+  { r: 251, g: 44, b: 54 }, // red
+  { r: 239, g: 177, b: 0 }, // amber
+  { r: 0, g: 166, b: 62 }, // green
+  { r: 0, g: 184, b: 219 }, // cyan
+  { r: 43, g: 127, b: 255 }, // blue
+  { r: 173, g: 70, b: 255 }, // purple
+  { r: 246, g: 51, b: 154 }, // pink
+];
+// 5×7 dot-matrix glyphs for the sweep-printed score (digits + %), one bit per
+// grid dot — the score IS the halftone field, same visual language.
+const CEL_GLYPHS: Record<string, string[]> = {
+  '0': ['01110', '10001', '10011', '10101', '11001', '10001', '01110'],
+  '1': ['00100', '01100', '00100', '00100', '00100', '00100', '01110'],
+  '2': ['01110', '10001', '00001', '00010', '00100', '01000', '11111'],
+  '3': ['11111', '00010', '00100', '00010', '00001', '10001', '01110'],
+  '4': ['00010', '00110', '01010', '10010', '11111', '00010', '00010'],
+  '5': ['11111', '10000', '11110', '00001', '00001', '10001', '01110'],
+  '6': ['00110', '01000', '10000', '11110', '10001', '10001', '01110'],
+  '7': ['11111', '00001', '00010', '00100', '01000', '01000', '01000'],
+  '8': ['01110', '10001', '10001', '01110', '10001', '10001', '01110'],
+  '9': ['01110', '10001', '10001', '01111', '00001', '00010', '01100'],
+  '%': ['11000', '11001', '00010', '00100', '01000', '10011', '00011'],
+};
+const CEL_HEADLINES: Record<1 | 2 | 3 | 4, { main: string; sub: string }> = {
+  1: { main: 'THREAT CONTAINED', sub: 'well done — share it with your mates' },
+  2: { main: 'PERIMETER HELD', sub: 'you nailed it' },
+  3: { main: 'ZERO BREACH', sub: 'you rock — worth a screenshot' },
+  4: { main: 'AIRTIGHT — 100%', sub: 'flawless · the field salutes you' },
+};
+
+// A celebration particle (firework shard, thruster exhaust, or confetti). It
+// moves continuously but RENDERS snapped to the dot grid — the 8-bit rule.
+interface CelParticle {
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  life: number;
+  age: number;
+  half: number;
+  c: RGB;
+  grav: number;
+  conf: boolean;
+}
+// A fireworks rocket: the cannon fires it toward a clear zone; it bursts there.
+interface CelRocket {
+  sx: number;
+  tx: number;
+  ty: number;
+  t0: number;
+  dur: number;
+  x: number;
+  y: number;
+  done: boolean;
+}
+interface Celebration {
+  tier: 1 | 2 | 3 | 4;
+  t0: number;
+  particles: CelParticle[];
+  rockets: CelRocket[];
+  pulses: { x: number; y: number; t0: number }[];
+  // Sweep-printed score: dot index → 0..1 column fraction (reveal order).
+  cells: Map<number, number> | null;
+  cellsLeft: number;
+  cellsWidth: number;
+  burst1: boolean;
+  burst2: boolean;
+  // Fireworks-tier confetti drop size — the ONLY thing that differs between the
+  // 35–59 and 60–89 bands (same show, more paper on top).
+  confetti2Count: number;
+  // The active timeline has finished; the end state (digits + headline) persists
+  // on stage until the player dismisses it (Esc / Try-again / a new ceremony).
+  settled: boolean;
+}
+
+function easeOutCubic(t: number): number {
+  const c = Math.max(0, Math.min(1, t));
+  return 1 - (1 - c) ** 3;
+}
+function easeInCubic(t: number): number {
+  const c = Math.max(0, Math.min(1, t));
+  return c * c * c;
+}
+function clamp01(v: number): number {
+  return Math.max(0, Math.min(1, v));
+}
+
 interface Colors {
   dot: RGB;
   accent: RGB;
@@ -209,14 +318,18 @@ function parseColor(value: string): RGB | null {
   return null;
 }
 
-function gridArr(w: number, h: number, sp: number): Dot[] {
+function gridArr(w: number, h: number, sp: number): { dots: Dot[]; cols: number; sp: number } {
   const a: Dot[] = [];
   // Clamp total cell count so a 4K viewport can't explode the loop.
   const cap = 20000;
   const safeSp = Math.max(sp, Math.sqrt((w * h) / cap));
+  // Row-major with a known column count, so the celebration can address dots by
+  // (row, col) when it maps the score glyphs onto the grid.
+  let cols = 0;
+  for (let x = safeSp / 2; x < w; x += safeSp) cols += 1;
   for (let y = safeSp / 2; y < h; y += safeSp)
     for (let x = safeSp / 2; x < w; x += safeSp) a.push({ x, y });
-  return a;
+  return { dots: a, cols, sp: safeSp };
 }
 
 function sweepX(t: number, w: number, period: number): number {
@@ -239,6 +352,12 @@ export interface GameStats {
   spawned: number;
   /** Round complete — the full wave has spawned and the field has cleared. */
   done: boolean;
+  /**
+   * A round-end ceremony's ACTIVE show is playing — the wrapper holds Try-again
+   * until it settles. After settling, the end state (digits + headline) persists
+   * on stage until Esc / Try-again dismisses it, with celebrating back to false.
+   */
+  celebrating: boolean;
 }
 
 export interface SweepEngine {
@@ -285,6 +404,13 @@ export interface SweepEngine {
    */
   onStats(cb: (stats: GameStats) => void): void;
   /**
+   * Play the round-end celebration for an arbitrary score (0–100) — the demo
+   * route's replay hook. endRound() drives the exact same path with the real
+   * grade, so a demoed tier is always faithful to the real ending. Halftone
+   * only (the game's texture); scores under 20 play nothing by design.
+   */
+  celebrate(score: number): void;
+  /**
    * Game: set a centered no-spawn box (CSS px) — the sign-in card — so armed and
    * gate threats never spawn behind it (unhittable → unfair escapes). Pass null
    * to clear it (the default: the field spawns across its whole upper band as
@@ -315,6 +441,8 @@ export function createSweepEngine(
 
   // Per-texture state.
   let dots: Dot[] = [];
+  let gridCols = 0; // dots per row — lets the celebration address the grid by (row, col)
+  let gridSp = 16; // actual grid pitch after the density cap (resize keeps it fresh)
   let latched: Latch[] = [];
   let lastLatch = -Infinity;
 
@@ -345,6 +473,10 @@ export function createSweepEngine(
   // Game-mode no-spawn box (the centered sign-in card), CSS px, or null. Set by
   // the wrapper on the /game route; keeps threats from spawning behind the card.
   let exclusion: { w: number; h: number } | null = null;
+  // Round-end celebration in flight (null = none). cannonAway latches after a
+  // blast-off so the launched cannon doesn't pop back under the results screen.
+  let cel: Celebration | null = null;
+  let cannonAway = false;
 
   let rafId: number | null = null;
   let running = false;
@@ -373,7 +505,7 @@ export function createSweepEngine(
     canvas.width = Math.round(w * dpr);
     canvas.height = Math.round(h * dpr);
     context.setTransform(dpr, 0, 0, dpr, 0, 0);
-    dots = gridArr(w, h, opts.spacing);
+    ({ dots, cols: gridCols, sp: gridSp } = gridArr(w, h, opts.spacing));
     // Seed / re-clamp the cannon into the new bounds.
     cannonX = cannonX === 0 ? w / 2 : Math.max(CANNON_HALF_W, Math.min(w - CANNON_HALF_W, cannonX));
     resolveColors();
@@ -461,6 +593,7 @@ export function createSweepEngine(
       escaped: roundEscaped,
       spawned: roundSpawned,
       done: roundDone,
+      celebrating: !!cel && !cel.settled,
     });
   }
 
@@ -586,11 +719,12 @@ export function createSweepEngine(
         anomalies.push({ x, y, t0: t, life: TARGET_LIFE, caught: false });
         roundSpawned += 1;
       }
-    } else if (mode === 'idle' && t - lastSpawn > opts.anomalyInterval) {
+    } else if (mode === 'idle' && !cel && t - lastSpawn > opts.anomalyInterval) {
       // Idle: exactly one anomaly, re-rolled on today's cadence/life. Placement
       // mirrors armed — the fair ring in game mode (so gate dots aren't hidden
       // under the card either), today's full-field roll otherwise (so /final and
-      // shell-transition stay byte-for-byte unchanged).
+      // shell-transition stay byte-for-byte unchanged). Suppressed while a demoed
+      // celebration plays over the idle field — the ceremony owns the stage.
       lastSpawn = t;
       let x: number;
       let y: number;
@@ -613,7 +747,29 @@ export function createSweepEngine(
     const halfCap = opts.maxDotSize / 2;
     const armed = mode === 'armed';
 
-    for (const p of dots) {
+    // Celebration pre-pass: hoist everything loop-invariant out of the dot loop
+    // so the ceremony costs ~nothing per dot when inactive (cel === null).
+    const c = cel;
+    const ce = c ? t - c.t0 : 0;
+    const celOriginY = h - 30;
+    const celMaxR = Math.hypot(w / 2, h);
+    const wave1 = !!c && c.tier === 1 && ce < 2.4;
+    const wave3 = !!c && c.tier >= 3 && ce < 1.6;
+    const rainbow = !!c && c.tier === 4 && ce > 3.0 && ce < 4.6;
+    const w1R = wave1 ? easeOutCubic(Math.min(ce / 1.5, 1)) * celMaxR * 0.9 : 0;
+    const w1S = wave1 ? 0.95 * (1 - clamp01((ce - 1.4) / 1.0)) : 0;
+    const w3R = wave3 ? easeOutCubic(Math.min(ce / 0.9, 1)) * celMaxR : 0;
+    const w3S = wave3 ? 0.9 * (1 - clamp01((ce - 0.8) / 0.8)) : 0;
+    const rainQ = rainbow ? Math.sin(((ce - 3.0) / 1.6) * Math.PI) * 0.5 : 0;
+    // The ceremonial sweep that prints the score: a soft grey column crossing
+    // the digit block left→right while the digits bloom in behind it.
+    const sweepLine =
+      c && c.cells && ce >= CEL_SWEEP_START - 0.1 && ce <= CEL_SWEEP_START + CEL_SWEEP_DUR + 0.2
+        ? c.cellsLeft + clamp01((ce - CEL_SWEEP_START) / CEL_SWEEP_DUR) * c.cellsWidth
+        : -1;
+
+    for (let i = 0; i < dots.length; i++) {
+      const p = dots[i];
       const sxAt = sx + (h / 2 - p.y) * tanT;
       const amb = 0.11 * (0.5 + 0.5 * Math.sin(p.x * 0.045 + p.y * 0.032 + t * 0.9));
       const dd = Math.abs(p.x - sxAt);
@@ -642,17 +798,75 @@ export function createSweepEngine(
         }
       }
 
-      const val = Math.min(1, Math.max(amb + bloom, ao));
-      if (val < 0.05) continue;
+      // Celebration contribution: waves/pulses/rainbow tint the dot toward a
+      // target colour; the sweep-printed digits override to full green. Reads at
+      // full strength (ignores `intensity`), like the anomaly/caught signals.
+      let celG = 0;
+      let celBoost = 0;
+      let celCol = colors.caught;
+      if (c) {
+        if (wave1 || wave3) {
+          const dist = Math.hypot(p.x - w / 2, p.y - celOriginY);
+          if (wave1) {
+            const v = Math.exp(-((dist - w1R) ** 2) / 4608) * w1S;
+            if (v > celG) celG = v;
+            if (v > celBoost) celBoost = v;
+          }
+          if (wave3) {
+            const v = Math.exp(-((dist - w3R) ** 2) / 5408) * w3S;
+            if (v > celG) celG = v;
+            if (v > celBoost) celBoost = v;
+          }
+        }
+        for (const pu of c.pulses) {
+          const pe = t - pu.t0;
+          if (pe < 0 || pe >= 0.6) continue;
+          const pr = easeOutCubic(pe / 0.6) * 70;
+          const pd = Math.hypot(p.x - pu.x, p.y - pu.y);
+          const v = Math.exp(-((pd - pr) ** 2) / 1152) * 0.9 * (1 - pe / 0.6);
+          if (v > celG) celG = v;
+          if (v > celBoost) celBoost = v;
+        }
+        if (sweepLine >= 0) {
+          const dx = p.x - sweepLine;
+          const v = Math.exp(-(dx * dx) / 1800) * 0.3;
+          if (v > celBoost) celBoost = v;
+        }
+        if (rainQ > celG) {
+          celG = rainQ;
+          celCol = CEL_PAL[((Math.floor(p.x * 0.03 + p.y * 0.02 + ce * 3) % 7) + 7) % 7];
+        }
+        if (c.cells) {
+          const rel = c.cells.get(i);
+          if (rel !== undefined) {
+            const revealT = c.t0 + CEL_SWEEP_START + rel * CEL_SWEEP_DUR;
+            const cp = easeOutCubic(clamp01((t - revealT) / 0.35));
+            if (cp > celG) {
+              celG = cp;
+              celCol = colors.caught;
+            }
+            if (cp * 0.9 > celBoost) celBoost = cp * 0.9;
+          }
+        }
+      }
 
-      const step = Math.round(val * 5);
+      const val = Math.min(1, Math.max(amb + bloom, ao));
+      if (val < 0.05 && celBoost < 0.02) continue;
+
+      const effVal = Math.min(1, val + celBoost);
+      const step = Math.round(effVal * 5);
       const half = Math.min(step * 1.05 + 0.5, halfCap);
-      // Anomaly cells render at full alpha (ignore `intensity`); ambient cells
-      // scale with it.
+      // Anomaly cells render at full alpha (ignore `intensity`); celebration
+      // cells mix the dot colour toward the target and also read full-strength;
+      // ambient cells scale with intensity as before.
       context.fillStyle =
         ao > 0.06
           ? `rgba(${ac.r},${ac.g},${ac.b},${Math.min(1, 0.45 + ao)})`
-          : `rgba(${r},${g},${b},${(0.12 + val * (opts.bloomAlpha - 0.12)) * k})`;
+          : celG > 0.04 || celBoost > 0.1
+            ? `rgba(${Math.round(r + (celCol.r - r) * celG)},${Math.round(
+                g + (celCol.g - g) * celG,
+              )},${Math.round(b + (celCol.b - b) * celG)},${Math.min(1, 0.15 + effVal * 0.85)})`
+            : `rgba(${r},${g},${b},${(0.12 + val * (opts.bloomAlpha - 0.12)) * k})`;
       context.fillRect(p.x - half, p.y - half, half * 2, half * 2);
     }
   }
@@ -691,11 +905,22 @@ export function createSweepEngine(
   }
 
   // Pixel cannon — stacked retro turret in the dot colour, rising into place over
-  // ARM_RISE on arming (the gentle flourish; no flash/shake).
+  // ARM_RISE on arming (the gentle flourish; no flash/shake). During a blast-off
+  // celebration it launches up and off the screen (ease-in — a launch, not a
+  // pop) and stays gone until the next round; popping back under the results
+  // after lifting off would be absurd.
   function drawCannon(t: number) {
+    if (cannonAway && !cel) return;
     const p = Math.min(1, Math.max(0, (t - armT) / ARM_RISE));
     const ease = 1 - (1 - p) * (1 - p); // easeOut
-    const baseY = h - CANNON_BASE_OFFSET + (1 - ease) * 40;
+    const lift =
+      cel && cel.tier >= 3
+        ? easeInCubic(clamp01((t - cel.t0 - CEL_LIFT_AT) / CEL_LIFT_DUR)) * (h + 120)
+        : cannonAway
+          ? h + 120
+          : 0;
+    const baseY = h - CANNON_BASE_OFFSET + (1 - ease) * 40 - lift;
+    if (baseY < -40) return;
     const { r, g, b } = colors.dot;
     context.fillStyle = `rgba(${r},${g},${b},${ease})`;
     const x = Math.round(cannonX);
@@ -754,6 +979,314 @@ export function createSweepEngine(
     }
   }
 
+  // --- Round-end celebration --------------------------------------------------
+
+  // <20 plays nothing (plain results); the ladder above 20 is the locked design.
+  function tierForScore(score: number): 0 | 1 | 2 | 3 | 4 {
+    if (score >= 100) return 4;
+    if (score >= 90) return 3;
+    if (score >= 35) return 2;
+    if (score >= 20) return 1;
+    return 0;
+  }
+
+  // Map the final score onto the dot grid as giant 5×7 dot-matrix digits, placed
+  // in the clear strip ABOVE the centered sign-in card (falling back to the left
+  // gutter, then to skipping the print entirely, on viewports where it can't
+  // fit). The sweep then reveals it column by column — the game's own detection
+  // move becomes the scoreboard.
+  function buildScoreCells(
+    score: number,
+  ): { cells: Map<number, number>; left: number; width: number } | null {
+    const str = `${Math.round(score)}%`;
+    const totCols = str.length * 6 - 1;
+    const blockW = totCols * gridSp;
+    const blockH = 7 * gridSp;
+    let centerX = w / 2;
+    let topY: number;
+    if (exclusion) {
+      const cardTop = (h - exclusion.h) / 2;
+      const cardLeft = (w - exclusion.w) / 2;
+      // Margin is deliberately slim (8px): at 1440×900 — the common laptop case —
+      // the strip above the 640px card is exactly 130px and the digit block is
+      // 112px; a fatter margin would wrongly reject the strip there and bump the
+      // score into the left-gutter fallback.
+      if (cardTop >= blockH + 8) {
+        topY = (cardTop - blockH) / 2;
+      } else if (cardLeft >= blockW + 32) {
+        centerX = cardLeft / 2;
+        topY = (h - blockH) / 2;
+      } else {
+        return null; // nowhere fair to print — the ceremony plays without it
+      }
+    } else {
+      topY = Math.max(gridSp, h * 0.16);
+    }
+    const startCol = Math.round(centerX / gridSp - totCols / 2);
+    const startRow = Math.max(0, Math.round(topY / gridSp));
+    const cells = new Map<number, number>();
+    for (let gi = 0; gi < str.length; gi++) {
+      const glyph = CEL_GLYPHS[str[gi]];
+      if (!glyph) continue;
+      for (let row = 0; row < 7; row++) {
+        for (let col = 0; col < 5; col++) {
+          if (glyph[row].charAt(col) !== '1') continue;
+          const gc = gi * 6 + col;
+          const cc = startCol + gc;
+          const rr = startRow + row;
+          if (cc < 0 || cc >= gridCols || rr < 0) continue;
+          const idx = rr * gridCols + cc;
+          if (idx < dots.length) cells.set(idx, gc / totCols);
+        }
+      }
+    }
+    return { cells, left: startCol * gridSp + gridSp / 2, width: totCols * gridSp };
+  }
+
+  // Arm a ceremony for the given score. Tier 0 (<20) is deliberately silent.
+  function startCelebration(score: number) {
+    cannonAway = false;
+    const tier = tierForScore(score);
+    if (tier === 0) {
+      cel = null;
+      return;
+    }
+    const built = tier >= 2 ? buildScoreCells(score) : null;
+    const rockets: CelRocket[] = [];
+    if (tier === 2) {
+      // The cannon fires three celebration rounds into the clear zones around
+      // the card (both gutters + the top strip) — never behind the card.
+      const cardLeft = exclusion ? (w - exclusion.w) / 2 : w * 0.3;
+      const cardRight = exclusion ? (w + exclusion.w) / 2 : w * 0.7;
+      const cardTop = exclusion ? (h - exclusion.h) / 2 : h * 0.4;
+      const targets = [
+        { x: cardLeft / 2, y: h * 0.42 },
+        { x: (cardRight + w) / 2, y: h * 0.42 },
+        { x: w / 2, y: Math.max(40, cardTop * 0.45) },
+      ];
+      for (let i = 0; i < targets.length; i++) {
+        rockets.push({
+          sx: cannonX,
+          x: cannonX,
+          y: h - CANNON_BARREL_Y,
+          tx: Math.max(SPAWN_EDGE, Math.min(w - SPAWN_EDGE, targets[i].x + (Math.random() * 30 - 15))),
+          ty: targets[i].y + Math.random() * 24,
+          t0: lastT + i * 0.4,
+          dur: 0.6,
+          done: false,
+        });
+      }
+    }
+    cel = {
+      tier,
+      t0: lastT,
+      particles: [],
+      rockets,
+      pulses: [],
+      cells: built ? built.cells : null,
+      cellsLeft: built ? built.left : 0,
+      cellsWidth: built ? built.width : 0,
+      burst1: false,
+      burst2: false,
+      // 60–89 is the same fireworks show as 35–59, just with more confetti.
+      confetti2Count: tier === 2 && score >= 60 ? 56 : 32,
+      settled: false,
+    };
+  }
+
+  // Rainbow confetti raining from the top, every piece born on a grid column.
+  function celConfetti(count: number, ySpread: number) {
+    if (!cel) return;
+    for (let i = 0; i < count; i++) {
+      if (cel.particles.length >= CEL_MAX_PARTICLES) return;
+      cel.particles.push({
+        x: Math.floor(Math.random() * Math.max(1, gridCols)) * gridSp + gridSp / 2,
+        y: -8 - Math.random() * ySpread,
+        vx: Math.random() * 30 - 15,
+        vy: 110 + Math.random() * 130,
+        life: 7,
+        age: 0,
+        half: 4,
+        c: CEL_PAL[(Math.random() * CEL_PAL.length) | 0],
+        grav: 0,
+        conf: true,
+      });
+    }
+  }
+
+  // A firework burst: a ring of square shards (on-theme green/grey) plus a small
+  // bloom pulse rolled through the dot field underneath.
+  function celBurst(x: number, y: number) {
+    if (!cel) return;
+    for (let i = 0; i < 16; i++) {
+      if (cel.particles.length >= CEL_MAX_PARTICLES) break;
+      const ang = Math.random() * 6.283;
+      const sp = 80 + Math.random() * 120;
+      cel.particles.push({
+        x,
+        y,
+        vx: Math.cos(ang) * sp,
+        vy: Math.sin(ang) * sp,
+        life: 0.9 + Math.random() * 0.4,
+        age: 0,
+        half: 4,
+        c: Math.random() < 0.7 ? colors.caught : colors.dot,
+        grav: 30,
+        conf: false,
+      });
+    }
+    cel.pulses.push({ x, y, t0: lastT });
+  }
+
+  // Advance the ceremony: rockets, the confetti ladder, particle motion, the
+  // blast-off latch, and the end-of-ceremony handoff back to the results state.
+  function stepCelebration(t: number, dt: number) {
+    const c = cel;
+    if (!c) return;
+    const e = t - c.t0;
+    if (!c.settled && e > CEL_DUR[c.tier]) {
+      // The active show is over, but the stage doesn't clear: digits + headline
+      // persist until the player dismisses them (Esc / Try-again / new ceremony).
+      // celebrating flips false here, so the wrapper reveals Try-again now.
+      c.settled = true;
+      emitStats();
+    }
+    if (c.tier >= 3 && !cannonAway && e > CEL_LIFT_AT + CEL_LIFT_DUR) {
+      cannonAway = true; // launched — gone until the next round/reset
+    }
+    // Thruster exhaust while the cannon rises.
+    if (c.tier >= 3) {
+      const rise = easeInCubic(clamp01((e - CEL_LIFT_AT) / CEL_LIFT_DUR));
+      if (rise > 0 && rise < 1) {
+        for (let i = 0; i < 3; i++) {
+          if (c.particles.length >= CEL_MAX_PARTICLES) break;
+          c.particles.push({
+            x: cannonX + (Math.random() * 10 - 5),
+            y: h - 22 - rise * (h + 120),
+            vx: Math.random() * 40 - 20,
+            vy: 80 + Math.random() * 80,
+            life: 0.45,
+            age: 0,
+            half: 3,
+            c: Math.random() < 0.5 ? colors.caught : colors.dot,
+            grav: 0,
+            conf: false,
+          });
+        }
+      }
+    }
+    // Confetti ladder (escalation is deliberate): fireworks gets a drop slightly
+    // above blast-off's original single burst; blast-off gets two volleys; the
+    // 100% storm is an opening burst plus dense rain.
+    if (c.tier === 2 && !c.burst1 && e > 1.6) {
+      c.burst1 = true;
+      celConfetti(c.confetti2Count, 160);
+    }
+    if (c.tier === 3 && !c.burst1 && e > 1.7) {
+      c.burst1 = true;
+      celConfetti(60, 200);
+    }
+    if (c.tier === 3 && !c.burst2 && e > 2.6) {
+      c.burst2 = true;
+      celConfetti(40, 120);
+    }
+    if (c.tier === 4 && !c.burst1 && e > 1.7) {
+      c.burst1 = true;
+      celConfetti(80, 200);
+    }
+    if (c.tier === 4 && e > 2.0 && e < 4.6) celConfetti(Math.round(CEL_RAIN_RATE * dt), 10);
+    // Fireworks rockets — fly on an ease-out arc, burst at the apex.
+    for (const rk of c.rockets) {
+      if (t < rk.t0) continue;
+      const p = clamp01((t - rk.t0) / rk.dur);
+      const pe = easeOutCubic(p);
+      rk.x = rk.sx + (rk.tx - rk.sx) * pe;
+      rk.y = h - CANNON_BARREL_Y + (rk.ty - (h - CANNON_BARREL_Y)) * pe;
+      if (p < 1) {
+        if (c.particles.length < CEL_MAX_PARTICLES) {
+          c.particles.push({
+            x: rk.x,
+            y: rk.y + 10,
+            vx: 0,
+            vy: 50,
+            life: 0.3,
+            age: 0,
+            half: 3,
+            c: colors.dot,
+            grav: 0,
+            conf: false,
+          });
+        }
+      } else if (!rk.done) {
+        rk.done = true;
+        celBurst(rk.x, rk.y);
+      }
+    }
+    // Advance + cull particles in place (no per-frame array allocation).
+    let n = 0;
+    for (let i = 0; i < c.particles.length; i++) {
+      const pt = c.particles[i];
+      pt.age += dt;
+      if (pt.age >= pt.life || pt.y > h + 12) continue;
+      if (!pt.conf) {
+        const drag = Math.exp(-2.5 * dt);
+        pt.vx *= drag;
+        pt.vy = pt.vy * drag + pt.grav * dt;
+      }
+      pt.x += pt.vx * dt;
+      pt.y += pt.vy * dt;
+      c.particles[n++] = pt;
+    }
+    c.particles.length = n;
+    // Prune expired bloom pulses (≤3 ever live — tier 2's bursts).
+    let m = 0;
+    for (let i = 0; i < c.pulses.length; i++) {
+      if (t - c.pulses[i].t0 < 0.6) c.pulses[m++] = c.pulses[i];
+    }
+    c.pulses.length = m;
+  }
+
+  // Draw the ceremony's moving pieces above the field: rockets and particles
+  // (all RENDERED snapped to the dot grid with chunky quarter-stepped fades —
+  // the 8-bit rule), then the Press Start 2P headline below the card.
+  function drawCelebration(t: number) {
+    const c = cel;
+    if (!c) return;
+    const e = t - c.t0;
+    const snap = (v: number) => gridSp / 2 + Math.round((v - gridSp / 2) / gridSp) * gridSp;
+    const dC = colors.dot;
+    for (const rk of c.rockets) {
+      if (t < rk.t0 || rk.done) continue;
+      context.fillStyle = `rgba(${dC.r},${dC.g},${dC.b},0.95)`;
+      context.fillRect(snap(rk.x) - 4, snap(rk.y) - 4, 8, 8);
+    }
+    for (const pt of c.particles) {
+      const al = Math.ceil((pt.conf ? 0.95 : (1 - pt.age / pt.life) * 0.9) * 4) / 4;
+      context.fillStyle = `rgba(${pt.c.r},${pt.c.g},${pt.c.b},${al})`;
+      context.fillRect(snap(pt.x) - pt.half, snap(pt.y) - pt.half, pt.half * 2, pt.half * 2);
+    }
+    // Headline + subline in the strip below the card, fading in with a gentle
+    // 10px ease-out rise (no pop). Headline shares the verdicts' pixel face.
+    const la = clamp01((e - CEL_LABEL_AT[c.tier]) / 0.5);
+    if (la > 0) {
+      const ease = easeOutCubic(la);
+      const head = CEL_HEADLINES[c.tier];
+      const cardBottom = exclusion ? (h + exclusion.h) / 2 : h * 0.62;
+      const ly = Math.round(cardBottom + (h - CANNON_CLEAR - cardBottom) * 0.45 + (1 - ease) * 10);
+      const gC = colors.caught;
+      context.textAlign = 'center';
+      context.textBaseline = 'alphabetic';
+      context.font = `13px ${LABEL_FONT}`;
+      context.fillStyle = `rgba(0,0,0,${0.3 * ease})`;
+      context.fillText(head.main, Math.round(w / 2) + 1, ly + 1);
+      context.fillStyle = `rgba(${gC.r},${gC.g},${gC.b},${ease})`;
+      context.fillText(head.main, Math.round(w / 2), ly);
+      context.font = "11px 'Geist Mono Variable', ui-monospace, SFMono-Regular, Menlo, monospace";
+      context.fillStyle = `rgba(${dC.r},${dC.g},${dC.b},${0.85 * ease})`;
+      context.fillText(head.sub, Math.round(w / 2), ly + 24);
+    }
+  }
+
   function frame(t: number) {
     const rawDt = t - lastFrameT;
     const dt = Math.min(Math.max(0, rawDt), 0.05); // clamp: no tab-resume spike
@@ -770,6 +1303,13 @@ export function createSweepEngine(
       armT += skip;
       lastSpawn += skip;
       lastLatch += skip;
+      if (cel) {
+        // The ceremony's clocks are absolute too — advance them across the gap
+        // or a resumed tab would instantly fast-forward/expire the celebration.
+        cel.t0 += skip;
+        for (const rk of cel.rockets) rk.t0 += skip;
+        for (const pu of cel.pulses) pu.t0 += skip;
+      }
     }
     lastFrameT = t;
     lastT = t;
@@ -783,11 +1323,15 @@ export function createSweepEngine(
         // so the final wave isn't a pile of unfair forced misses.
         if (roundSpawned >= ROUND_ATTACKS && anomalies.length === 0) endRound();
       }
+      if (cel) stepCelebration(t, dt);
       drawHalftone(t);
-      if (mode === 'armed' || mode === 'over') {
-        drawCannon(t); // frozen turret stays as a visual anchor under the result
+      if (mode === 'armed' || mode === 'over' || cel) {
+        // Cannon: live shooter, the frozen anchor under the result, or the demo
+        // ceremony's performer (it rises in to fire the celebration).
+        drawCannon(t);
         if (mode === 'armed') drawBullets();
       }
+      if (cel) drawCelebration(t);
     } else {
       drawClean(t);
     }
@@ -840,7 +1384,7 @@ export function createSweepEngine(
   function setOptions(next: Partial<EngineOptions>) {
     const spacingChanged = next.spacing !== undefined && next.spacing !== opts.spacing;
     opts = { ...opts, ...next };
-    if (spacingChanged) dots = gridArr(w, h, opts.spacing);
+    if (spacingChanged) ({ dots, cols: gridCols, sp: gridSp } = gridArr(w, h, opts.spacing));
     resolveColors();
     if (!running) renderStatic();
   }
@@ -895,6 +1439,8 @@ export function createSweepEngine(
   function setMode(m: 'idle' | 'armed') {
     if (mode === m) return;
     mode = m;
+    cel = null; // a real mode change always cancels any running ceremony
+    cannonAway = false;
     bullets.length = 0;
     cannonDir = 0;
     firing = false;
@@ -922,6 +1468,8 @@ export function createSweepEngine(
     roundSpawned = 0;
     roundDone = false;
     mode = 'armed';
+    cel = null; // a fresh round cancels any ceremony still on stage
+    cannonAway = false;
     bullets.length = 0;
     cannonDir = 0;
     firing = false;
@@ -935,14 +1483,17 @@ export function createSweepEngine(
   }
 
   // Round over: freeze the shooter (no sim, no input, no bullets) while the
-  // decorative field keeps breathing. The wrapper reveals the result + Try-again
-  // off `done`; startRound() returns to play.
+  // decorative field keeps breathing, and play the tiered ceremony off the final
+  // grade. The wrapper reveals Try-again once the ceremony lands (celebrating
+  // flips false); startRound() returns to play.
   function endRound() {
     mode = 'over';
     roundDone = true;
     bullets.length = 0;
     cannonDir = 0;
     firing = false;
+    const faced = roundKills + roundEscaped;
+    startCelebration(faced > 0 ? Math.round((roundKills / faced) * 100) : 100);
     emitStats();
   }
 
@@ -958,6 +1509,8 @@ export function createSweepEngine(
     roundSpawned = 0;
     roundDone = false;
     mode = 'idle';
+    cel = null;
+    cannonAway = false;
     bullets.length = 0;
     cannonDir = 0;
     firing = false;
@@ -985,6 +1538,17 @@ export function createSweepEngine(
     onStatsCb = cb;
   }
 
+  // Public replay hook: play the ceremony for an arbitrary score — the demo
+  // route's buttons. Game rounds drive the same startCelebration path from
+  // endRound(), so a demoed tier is always faithful to the real ending. On the
+  // idle field the cannon rises in (re-seeding armT) to perform the show.
+  function celebrate(score: number) {
+    if (opts.texture !== 'halftone' || !running) return;
+    if (mode === 'idle') armT = lastT;
+    startCelebration(score);
+    emitStats();
+  }
+
   // Set/clear the centered no-spawn card box (game mode). Only the size is stored;
   // spawnRing centers + pads it against the live w/h, so it tracks resizes. Clamped
   // to non-negative and to the canvas — a card can't sensibly be larger than the
@@ -1010,6 +1574,7 @@ export function createSweepEngine(
     setCannonDir,
     setFiring,
     onStats,
+    celebrate,
     setExclusion,
   };
 }
