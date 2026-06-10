@@ -14,6 +14,8 @@
  * pixel cannon (← → + Space) neutralises them through the very same kill path.
  */
 
+import { sfx } from './sfx';
+
 export type Texture = 'clean' | 'halftone';
 
 export interface EngineOptions {
@@ -411,6 +413,12 @@ export interface SweepEngine {
    */
   celebrate(score: number): void;
   /**
+   * Enable/disable the synthesized 8-bit SFX (pew/zap/coin/power-up/fanfare).
+   * Default OFF — only the game and celebration-demo routes turn it on, so the
+   * plain decorative field never makes a sound.
+   */
+  setSound(on: boolean): void;
+  /**
    * Game: set a centered no-spawn box (CSS px) — the sign-in card — so armed and
    * gate threats never spawn behind it (unhittable → unfair escapes). Pass null
    * to clear it (the default: the field spawns across its whole upper band as
@@ -477,6 +485,10 @@ export function createSweepEngine(
   // blast-off so the launched cannon doesn't pop back under the results screen.
   let cel: Celebration | null = null;
   let cannonAway = false;
+  // 8-bit SFX gate. Default OFF so /final, /tune and shell-transition stay a
+  // silent login field; the wrapper enables it on the game + celebration-demo
+  // routes (and the player can mute with M).
+  let soundOn = false;
 
   let rafId: number | null = null;
   let running = false;
@@ -603,6 +615,11 @@ export function createSweepEngine(
   function recordKill() {
     killTotal += 1;
     if (mode === 'armed') roundKills += 1;
+    // Armed kill = zap; idle/gate catch = the INSERT COIN chirp.
+    if (soundOn) {
+      if (mode === 'armed') sfx.zap();
+      else sfx.coin();
+    }
     emitStats();
   }
 
@@ -879,6 +896,7 @@ export function createSweepEngine(
     if (firing && t - lastFire >= FIRE_CADENCE && bullets.length < MAX_BULLETS) {
       bullets.push({ x: cannonX, y: h - CANNON_BARREL_Y });
       lastFire = t;
+      if (soundOn) sfx.pew();
     }
 
     // Move + collide + compact in place (no per-frame allocation at hold-fire).
@@ -1092,6 +1110,7 @@ export function createSweepEngine(
       confetti2Count: tier === 2 && score >= 60 ? 56 : 32,
       settled: false,
     };
+    if (soundOn) sfx.fanfare(); // covers real round-ends AND demoed ceremonies
   }
 
   // Rainbow confetti raining from the top, every piece born on a grid column.
@@ -1479,6 +1498,7 @@ export function createSweepEngine(
     cannonX = w / 2;
     anomalies = [];
     caught = []; // drop any in-flight green dissolves from the prior round
+    if (soundOn) sfx.powerup(); // the arming flourish, audible edition
     emitStats();
   }
 
@@ -1549,6 +1569,10 @@ export function createSweepEngine(
     emitStats();
   }
 
+  function setSound(on: boolean) {
+    soundOn = on;
+  }
+
   // Set/clear the centered no-spawn card box (game mode). Only the size is stored;
   // spawnRing centers + pads it against the live w/h, so it tracks resizes. Clamped
   // to non-negative and to the canvas — a card can't sensibly be larger than the
@@ -1575,6 +1599,7 @@ export function createSweepEngine(
     setFiring,
     onStats,
     celebrate,
+    setSound,
     setExclusion,
   };
 }

@@ -133,6 +133,12 @@ export function LoginBackground(props: LoginBackgroundProps) {
   // so accuracy is a comparable final grade out of the total.
   const faced = stats.stopped + stats.escaped;
   const accuracy = faced > 0 ? Math.round((stats.stopped / faced) * 100) : 100;
+  // 8-bit SFX gate: sound is possible only where the easter egg lives — the game
+  // route and the celebration demo (which passes onEngineReady). Default ON
+  // (whisper-quiet master volume); the player mutes with M mid-game. /final,
+  // /tune and shell-transition are never sound-capable.
+  const soundCapable = game || !!props.onEngineReady;
+  const [soundOn, setSoundOn] = useState(true);
 
   // Latest values mirrored into refs so the mount-scoped effect and its media /
   // resize listeners always read current state without re-subscribing.
@@ -240,6 +246,11 @@ export function LoginBackground(props: LoginBackgroundProps) {
     }
   }, [signature]);
 
+  // Push the sound gate to the engine (capable routes only; M toggles it live).
+  useEffect(() => {
+    engineRef.current?.setSound(soundCapable && soundOn);
+  }, [soundCapable, soundOn]);
+
   // Arming: flip the engine to the shooter at the gate, and own the keyboard
   // only while actually armed (so /final and shell-transition never capture keys).
   useEffect(() => {
@@ -265,6 +276,8 @@ export function LoginBackground(props: LoginBackgroundProps) {
           engine.exitGame();
           hasStartedRoundRef.current = false;
           e.preventDefault();
+        } else if (e.key === 'm' || e.key === 'M') {
+          setSoundOn((v) => !v); // the fanfare plays here — mute stays reachable
         }
       };
       window.addEventListener('keydown', onResultsKeyDown);
@@ -301,6 +314,8 @@ export function LoginBackground(props: LoginBackgroundProps) {
         engine.exitGame();
         hasStartedRoundRef.current = false;
         e.preventDefault();
+      } else if (e.key === 'm' || e.key === 'M') {
+        setSoundOn((v) => !v); // mute toggle — the engine gate follows via effect
       }
     };
     const onKeyUp = (e: KeyboardEvent) => {
@@ -416,7 +431,7 @@ export function LoginBackground(props: LoginBackgroundProps) {
               className="text-[color:var(--color-text-secondary)]"
               style={{ fontSize: 10, lineHeight: '14px' }}
             >
-              ← → move · space fire · esc to exit
+              ← → move · space fire · esc exit · m sound {soundOn ? 'on' : 'off'}
             </div>
           )}
         </div>

@@ -91,6 +91,7 @@ setCannonDir(dir: number): void            // −1 / 0 / +1 ; no-op unless armed
 setFiring(on: boolean): void               // Space down/up; cadence owned by the loop
 onStats(cb: (s: GameStats) => void): void  // fires on every kill, every escape, and at round end
 celebrate(score: number): void             // round-end ceremony replay hook — see shooter-game-celebration-handoff.md
+setSound(on: boolean): void                // 8-bit SFX gate (default OFF) — see §9a
 setExclusion(box: { width: number; height: number } | null): void // centered no-spawn card box
 ```
 
@@ -380,7 +381,8 @@ exception to "no hard-coded hex." Do **not** introduce new hex in DOM/JSX.
   as the ceremony settles. There is **no** separate "round complete" text line —
   the frozen field + the celebration + Try-again convey it.
 - **Controls hint** (armed, not results): a line below the box —
-  `← → move · space fire · esc to exit` — Geist Mono **10px / 14px**,
+  `← → move · space fire · esc exit · m sound on` (the trailing word reflects the
+  live mute state, `on`/`off`) — Geist Mono **10px / 14px**,
   `var(--color-text-secondary)`. (Mutually exclusive with Try-again.)
 
 ### 8.4 Verdict label (on each kill, on-canvas)
@@ -421,13 +423,47 @@ exception to "no hard-coded hex." Do **not** introduce new hex in DOM/JSX.
 - `ArrowLeft`/`ArrowRight` → set a `{left,right}` held-state, derive
   `dir = (right?1:0) − (left?1:0)` (both-held cancels). `Space` (`' '`/`'Spacebar'`)
   → `setFiring(true)`; ignore `e.repeat`. `Escape` → `engine.exitGame()` +
-  reset `hasStartedRoundRef` (quit to the gate). Keyup reverses arrows/space.
+  reset `hasStartedRoundRef` (quit to the gate). `m`/`M` → toggle the sound gate
+  (React state → `engine.setSound`, see §9a). Keyup reverses arrows/space.
 - `e.preventDefault()` for `ArrowLeft`/`ArrowRight`/`Space`/`Escape` (stop page
-  scroll; never hijack other keys).
+  scroll; never hijack other keys). `M` does NOT preventDefault.
 - **Cleanup** removes both listeners **and** clears engine input
   (`setFiring(false)`, `setCannonDir(0)`). `stop()` also rests with no held input.
 - **Click-to-catch** (`pointerdown`) stays attached whenever interactive (works in
   every mode, incl. during the armed round — see §6 NOTE).
+
+### 9a. Sound — synthesized 8-bit SFX (`sfx.ts`)
+
+All sounds are **synthesized with the Web Audio API** — square waves + band-passed
+noise, the way the original hardware made them. **No audio files, no deps, no bundle
+weight.** Module: `src/components/login-background/sfx.ts` (framework-agnostic, like
+the engine).
+
+| Event (engine hook) | Sound | Recipe |
+|---|---|---|
+| Bullet emitted (`stepGame`) | **pew** | square 980→180 Hz glide, 80 ms |
+| Armed kill — bullet or click (`recordKill`) | **zap** | square 320→70 Hz 60 ms + band-passed noise burst (1400→300 Hz, 70 ms) |
+| Idle/gate catch (`recordKill`) | **coin** | two square notes: B5 (988 Hz) 80 ms → E6 (1319 Hz) 380 ms — the INSERT COIN chirp |
+| Arm / fresh round (`startRound`) | **power-up** | rising square arpeggio G4·C5·E5·G5 (392/523/659/784 Hz), 60 ms steps |
+| Ceremony starts, tier ≥ 1 (`startCelebration` — real round-ends AND demoed) | **fanfare** | C5·E5·G5 90 ms steps + C6 (1046 Hz) 220 ms |
+
+- **Loudness:** `MASTER_VOLUME = 0.06` — deliberately whisper-quiet (this lives on a
+  login screen; sounds read as ticks, not arcade blasts). Per-sound gains sit under
+  that master. Sounds are all ≤ ~0.5 s; nothing sustained.
+- **Gating (the important part):** the engine's `soundOn` flag defaults **false** —
+  `/final`, `/tune`, and `shell-transition` never create an `AudioContext`, let alone
+  play a sound. The wrapper enables it only where the easter egg lives:
+  `soundCapable = game || !!onEngineReady` (the `/game` route and the celebration
+  demo). React state `soundOn` (default **true**) ANDs with that and is pushed via
+  `engine.setSound(...)` in a small effect.
+- **Mute:** `M` toggles while armed AND on the results/ceremony screen (the fanfare
+  plays there); the controls hint shows the live state. Known nuance (accepted):
+  gate-phase coin chirps play before the keyboard attaches, so muting is only
+  reachable once armed.
+- **Autoplay safety:** the `AudioContext` is created lazily inside the first play
+  call, which is always downstream of a user gesture (the game can't make a sound
+  before the player clicks/keys); a suspended context is `resume()`d defensively.
+  SSR-safe (`typeof window` guard; nothing runs at import time).
 
 ---
 
@@ -467,6 +503,7 @@ Master lever: `FIRE_CADENCE` (raise to harden); raise `ARMED_SPAWN` to ease; low
 | `SPAWN_TRIES` | 24 | reject-sampling attempts before the band fallback |
 | dt clamp | 0.05 s | per-frame delta cap |
 | `anomalyInterval` (idle) | 1.4 s | original single-anomaly cadence |
+| `MASTER_VOLUME` (sfx.ts) | 0.06 | SFX master gain — whisper-quiet by design (§9a) |
 
 Field/animation params (unchanged, for reference): halftone spacing 16,
 `sweepPeriod` 12.5 s, `tilt` 16°, `bloomRadius` 80, `intensity` 0.9,
@@ -553,6 +590,11 @@ Field/animation params (unchanged, for reference): halftone spacing 16,
 - [ ] `Esc` during play quits to the decorative field (counter hidden); re-clicking
       the dots replays the gate from 0 and re-arms at 5.
 - [ ] Bullets and cannon are **grey**; threats red; neutralised green.
+- [ ] **Sound (§9a):** gate catches chirp the coin; arming plays the power-up; each
+      shot pews; each kill zaps; the round-end ceremony opens with the fanfare. `M`
+      mutes/unmutes (armed + results screens) and the hint reflects the state.
+- [ ] `/final`, `/tune`, and `shell-transition` are **completely silent** — no
+      `AudioContext` is ever created there.
 - [ ] `Space`/arrows/`Esc` never scroll the page; other keys unaffected.
 - [ ] `pnpm exec tsc --noEmit`, `pnpm exec eslint`, and `pnpm build` all pass; the
       `/game` route exports.
@@ -594,7 +636,9 @@ time of writing):
   state machine `startRound`/`endRound`/`exitGame`, `onStats`, `setExclusion`).
 - `src/components/login-background/login-background.tsx` — the React wrapper
   (`game` + `excludeCardSize` props, `onStats` wiring, arming effect + keyboard +
-  Esc, the counter/results box + hints).
+  Esc + the M sound toggle, the counter/results box + hints).
+- `src/components/login-background/sfx.ts` — the synthesized 8-bit SFX module
+  (§9a): Web Audio square waves + noise, `MASTER_VOLUME`, the five sounds.
 - `src/app/login-background/game/page.tsx` — the route (card size consts +
   `excludeCardSize`).
 - `src/app/login-background/game/celebrate/page.tsx` — the UNLISTED celebration

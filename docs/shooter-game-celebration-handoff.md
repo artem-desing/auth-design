@@ -56,6 +56,9 @@ tier 4 also in the field wave.
 
 - `endRound()` computes the grade (`faced > 0 ? round(stopped/faced·100) : 100`) and
   calls `startCelebration(score)` **before** `emitStats()`. Tier 0 sets no ceremony.
+- `startCelebration` (tier ≥ 1) also plays the **fanfare** SFX when sound is enabled —
+  for real round-ends AND demoed ceremonies alike (the 8-bit sound layer is specced in
+  the base doc, §9a).
 - The **active show** runs for `CEL_DUR[tier]` seconds — 2.6 / 3.8 / 4.0 / 5.2 for tiers
   1/2/3/4. While active, `GameStats.celebrating === true` and the wrapper **hides
   Try-again**.
@@ -212,6 +215,10 @@ a flawless 100% run might take fifty real rounds; this takes one click.
   `60–89 · Fireworks+` → `78`, `90–99 · Blast-off` → `94`, `100 · Airtight` → `100`.
 - No `game` prop → no gate/HUD/keyboard; click-to-catch still works (harmless).
   Ceremonies persist until another button replaces them.
+- The route is **sound-capable** (passing `onEngineReady` flips the wrapper's
+  `soundCapable`), so tier buttons open with the fanfare and clicks chirp — same
+  whisper-quiet master volume as the game (base doc §9a). No mute toggle here
+  (internal review page).
 
 ---
 
@@ -254,6 +261,8 @@ a flawless 100% run might take fifty real rounds; this takes one click.
 - [ ] `/final`, `/tune`, and `shell-transition` are visually + behaviourally unchanged.
 - [ ] The demo route replays all five bands repeatedly; switching tiers mid-show is
       clean (cannon returns for non-blast-off tiers).
+- [ ] Tier ≥ 1 ceremonies open with the fanfare SFX (game + demo) when sound is on;
+      `M` on the results screen mutes it for the next round.
 - [ ] `pnpm exec tsc --noEmit`, `pnpm exec eslint`, `pnpm build` pass; the
       `/login-background/game/celebrate` route exports.
 
@@ -278,6 +287,8 @@ exists precisely to make that manual pass a one-click affair per tier.
   `GameStats.celebrating` gating on Try-again, the Esc-only results-screen listener,
   the size-only exclusion guard.
 - `src/app/login-background/game/celebrate/page.tsx` — the unlisted demo route.
+- `src/components/login-background/sfx.ts` — the synthesized 8-bit SFX module
+  (fanfare + the rest of the sound vocabulary; specced in the base doc §9a).
 - `docs/shooter-game-handoff.md` — the base game spec this document amends.
 
 This spec and the prototype agree; where prose is ambiguous, `engine.ts` is
